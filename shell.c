@@ -22,6 +22,8 @@
 #include <readline/readline.h>
 #include <readline/history.h>
 #include <dirent.h>
+#include <termios.h>   /* Terminal control */
+#include <sys/ioctl.h> /* ioctl for terminal control */
 
 #define MAX_INPUT_SIZE 1024
 #define MAX_ARGS 64
@@ -31,10 +33,13 @@
 // Job control structure
 typedef struct job
 {
-  pid_t pid;
-  int job_id;
-  char command[MAX_INPUT_SIZE];
-  int running;
+  pid_t pid;                    // Process ID
+  pid_t pgid;                   // Process group ID
+  int job_id;                   // Job ID
+  char command[MAX_INPUT_SIZE]; // Command string
+  int running;                  // 1 if running, 0 if stopped
+  int foreground;               // 1 if foreground, 0 if background
+  int notified;                 // 1 if user was notified of status change
 } job_t;
 
 // Global variables
@@ -42,6 +47,12 @@ char history[MAX_HISTORY][MAX_INPUT_SIZE];
 int history_count = 0;
 job_t jobs[MAX_JOBS];
 int job_count = 0;
+
+// Terminal control globals
+static pid_t shell_pgid;
+static int shell_terminal;
+static struct termios shell_tmodes;
+static int shell_is_interactive;
 
 // Function declarations
 void print_prompt();
@@ -55,7 +66,7 @@ void setup_signal_handlers();
 void handle_sigint(int sig);
 void handle_sigtstp(int sig);
 void check_background_jobs();
-int add_job(pid_t pid, const char *command);
+int add_job(pid_t pid, pid_t pgid, const char *command, int bg);
 void remove_job(int job_id);
 void list_jobs();
 int parse_and_execute(char *input);
@@ -64,6 +75,16 @@ void handle_redirection(char **args, int *arg_count);
 void initialize_readline();
 char *command_generator(const char *text, int state);
 char **command_completion(const char *text, int start, int end);
+
+// New terminal control functions
+void init_shell_terminal();
+void put_job_in_foreground(job_t *job, int cont);
+void put_job_in_background(job_t *job, int cont);
+job_t *find_job_by_pid(pid_t pid);
+void wait_for_job(job_t *job);
+void mark_job_as_running(job_t *job);
+void continue_job(job_t *job, int foreground);
+pid_t create_process_group();
 
 /**
  * Main function - shell entry point
@@ -76,9 +97,15 @@ int main()
   for (int i = 0; i < MAX_JOBS; i++)
   {
     jobs[i].pid = -1;
+    jobs[i].pgid = -1;
     jobs[i].job_id = -1;
     jobs[i].running = 0;
+    jobs[i].foreground = 0;
+    jobs[i].notified = 0;
   }
+
+  // Initialize terminal and set up job control
+  init_shell_terminal();
 
   // Set up signal handlers
   setup_signal_handlers();
@@ -300,24 +327,43 @@ int execute_builtin(char **args)
     int job_id = atoi(args[1]);
     for (int i = 0; i < MAX_JOBS; i++)
     {
-      if (jobs[i].job_id == job_id && jobs[i].running)
+      if (jobs[i].job_id == job_id)
       {
-        pid_t pid = jobs[i].pid;
         printf("Bringing job %d to foreground: %s\n", job_id, jobs[i].command);
 
-        // Send SIGCONT to continue the process
-        kill(pid, SIGCONT);
-
-        // Wait for it to finish
-        waitpid(pid, NULL, WUNTRACED);
-
-        // Remove the job
-        remove_job(job_id);
+        // Continue the job in the foreground
+        continue_job(&jobs[i], 1);
         return 1;
       }
     }
 
     fprintf(stderr, "fg: no such job: %d\n", job_id);
+    return 1;
+  }
+
+  // bg command
+  if (strcmp(args[0], "bg") == 0)
+  {
+    if (args[1] == NULL)
+    {
+      fprintf(stderr, "bg: job id required\n");
+      return 1;
+    }
+
+    int job_id = atoi(args[1]);
+    for (int i = 0; i < MAX_JOBS; i++)
+    {
+      if (jobs[i].job_id == job_id)
+      {
+        printf("Running job %d in background: %s\n", job_id, jobs[i].command);
+
+        // Continue the job in the background
+        continue_job(&jobs[i], 0);
+        return 1;
+      }
+    }
+
+    fprintf(stderr, "bg: no such job: %d\n", job_id);
     return 1;
   }
 
@@ -330,6 +376,7 @@ int execute_builtin(char **args)
 int execute_command(char **args, int arg_count, int background)
 {
   pid_t pid;
+  pid_t pgid = 0;
 
   // Create child process
   pid = fork();
@@ -343,9 +390,35 @@ int execute_command(char **args, int arg_count, int background)
   {
     // Child process
 
-    // Reset signal handlers to default for the child
-    signal(SIGINT, SIG_DFL);
-    signal(SIGTSTP, SIG_DFL);
+    if (shell_is_interactive)
+    {
+      // Put the process into a new process group
+      pid = getpid();
+
+      // The process group ID is the same as the process ID of the first process
+      if (pgid == 0)
+      {
+        pgid = pid;
+      }
+
+      setpgid(pid, pgid);
+
+      // If foreground, give the process group control of the terminal
+      if (!background)
+      {
+        tcsetpgrp(shell_terminal, pgid);
+      }
+
+      // Reset signal handlers to default for the child
+      signal(SIGINT, SIG_DFL);
+      signal(SIGQUIT, SIG_DFL);
+      signal(SIGTSTP, SIG_DFL);
+      signal(SIGTTIN, SIG_DFL);
+      signal(SIGTTOU, SIG_DFL);
+    }
+
+    // Handle redirection
+    handle_redirection(args, &arg_count);
 
     // Execute the command
     if (execvp(args[0], args) == -1)
@@ -358,6 +431,17 @@ int execute_command(char **args, int arg_count, int background)
   {
     // Parent process
 
+    if (shell_is_interactive)
+    {
+      // Put the child in its own process group
+      if (pgid == 0)
+      {
+        pgid = pid;
+      }
+
+      setpgid(pid, pgid);
+    }
+
     // Rebuild command string for job control
     char command[MAX_INPUT_SIZE] = "";
     for (int i = 0; i < arg_count; i++)
@@ -369,26 +453,32 @@ int execute_command(char **args, int arg_count, int background)
       }
     }
 
+    // Add job to job list
+    int job_id = add_job(pid, pgid, command, background);
+    job_t *job = &jobs[job_id - 1]; // job_id is 1-based, array is 0-based
+
     if (background)
     {
       // Background process
-      int job_id = add_job(pid, command);
       printf("[%d] %d\n", job_id, pid);
+      put_job_in_background(job, 0);
       return 0;
     }
     else
     {
       // Foreground process
-      int status;
-      waitpid(pid, &status, WUNTRACED);
+      put_job_in_foreground(job, 0);
 
       // Check if process was stopped
-      if (WIFSTOPPED(status))
+      if (!job->running)
       {
-        printf("\n[%d] Stopped: %s\n", add_job(pid, command), command);
+        printf("\n[%d] Stopped: %s\n", job_id, job->command);
       }
-
-      return status;
+      else
+      {
+        // Job completed, remove from job list
+        remove_job(job_id);
+      }
     }
   }
 
@@ -396,17 +486,165 @@ int execute_command(char **args, int arg_count, int background)
 }
 
 /**
+ * Put job in foreground
+ */
+void put_job_in_foreground(job_t *job, int cont)
+{
+  if (job == NULL)
+  {
+    return;
+  }
+
+  // Give terminal control to the job's process group
+  tcsetpgrp(shell_terminal, job->pgid);
+
+  // If continue is specified, send SIGCONT signal to the job
+  if (cont)
+  {
+    if (kill(-job->pgid, SIGCONT) < 0)
+    {
+      perror("kill (SIGCONT)");
+    }
+  }
+
+  // Mark job as running and in foreground
+  job->running = 1;
+  job->foreground = 1;
+
+  // Wait for job to report
+  wait_for_job(job);
+
+  // Put the shell back in the foreground
+  tcsetpgrp(shell_terminal, shell_pgid);
+
+  // Restore the shell's terminal modes
+  tcsetattr(shell_terminal, TCSADRAIN, &shell_tmodes);
+}
+
+/**
+ * Put job in background
+ */
+void put_job_in_background(job_t *job, int cont)
+{
+  if (job == NULL)
+  {
+    return;
+  }
+
+  // If continue is specified, send SIGCONT signal to the job
+  if (cont)
+  {
+    if (kill(-job->pgid, SIGCONT) < 0)
+    {
+      perror("kill (SIGCONT)");
+    }
+  }
+
+  // Mark job as running and in background
+  job->running = 1;
+  job->foreground = 0;
+}
+
+/**
+ * Wait for a job to complete
+ */
+void wait_for_job(job_t *job)
+{
+  int status;
+  pid_t pid;
+
+  do
+  {
+    pid = waitpid(-job->pgid, &status, WUNTRACED);
+    if (pid < 0)
+    {
+      if (errno == EINTR)
+      {
+        // Interrupted by signal, just continue
+        continue;
+      }
+      perror("waitpid");
+      return;
+    }
+
+    // Check for job state changes
+    if (WIFSTOPPED(status))
+    {
+      job->running = 0;
+      return;
+    }
+    else if (WIFEXITED(status) || WIFSIGNALED(status))
+    {
+      // If it's the job's process group leader, mark job as done
+      if (pid == job->pid)
+      {
+        job->running = 0;
+        return;
+      }
+    }
+  } while (pid != job->pid);
+}
+
+/**
+ * Find job by pid
+ */
+job_t *find_job_by_pid(pid_t pid)
+{
+  for (int i = 0; i < MAX_JOBS; i++)
+  {
+    if (jobs[i].pid == pid)
+    {
+      return &jobs[i];
+    }
+  }
+  return NULL;
+}
+
+/**
+ * Mark job as running
+ */
+void mark_job_as_running(job_t *job)
+{
+  if (job == NULL)
+  {
+    return;
+  }
+  job->running = 1;
+  job->notified = 0;
+}
+
+/**
+ * Continue a stopped job
+ */
+void continue_job(job_t *job, int foreground)
+{
+  mark_job_as_running(job);
+
+  if (foreground)
+  {
+    put_job_in_foreground(job, 1);
+  }
+  else
+  {
+    put_job_in_background(job, 1);
+  }
+}
+
+/**
  * Add job to job list
  */
-int add_job(pid_t pid, const char *command)
+int add_job(pid_t pid, pid_t pgid, const char *command, int bg)
 {
   for (int i = 0; i < MAX_JOBS; i++)
   {
     if (jobs[i].pid == -1)
     {
       jobs[i].pid = pid;
+      jobs[i].pgid = pgid;
       jobs[i].job_id = i + 1;
       jobs[i].running = 1;
+      jobs[i].foreground = !bg;
+      jobs[i].notified = 0;
       strcpy(jobs[i].command, command);
       job_count++;
       return jobs[i].job_id;
@@ -418,39 +656,6 @@ int add_job(pid_t pid, const char *command)
 }
 
 /**
- * Remove job from job list
- */
-void remove_job(int job_id)
-{
-  for (int i = 0; i < MAX_JOBS; i++)
-  {
-    if (jobs[i].job_id == job_id)
-    {
-      jobs[i].pid = -1;
-      jobs[i].job_id = -1;
-      jobs[i].running = 0;
-      jobs[i].command[0] = '\0';
-      job_count--;
-      break;
-    }
-  }
-}
-
-/**
- * List all jobs
- */
-void list_jobs()
-{
-  for (int i = 0; i < MAX_JOBS; i++)
-  {
-    if (jobs[i].running)
-    {
-      printf("[%d] %d %s\n", jobs[i].job_id, jobs[i].pid, jobs[i].command);
-    }
-  }
-}
-
-/**
  * Check for completed background jobs
  */
 void check_background_jobs()
@@ -458,17 +663,222 @@ void check_background_jobs()
   pid_t pid;
   int status;
 
-  while ((pid = waitpid(-1, &status, WNOHANG)) > 0)
+  while ((pid = waitpid(-1, &status, WNOHANG | WUNTRACED)) > 0)
   {
-    for (int i = 0; i < MAX_JOBS; i++)
+    job_t *job = find_job_by_pid(pid);
+
+    if (job == NULL)
     {
-      if (jobs[i].pid == pid)
+      continue;
+    }
+
+    if (WIFSTOPPED(status))
+    {
+      job->running = 0;
+      if (!job->notified)
       {
-        printf("\n[%d] Done: %s\n", jobs[i].job_id, jobs[i].command);
-        remove_job(jobs[i].job_id);
-        break;
+        printf("\n[%d] Stopped: %s\n", job->job_id, job->command);
+        job->notified = 1;
       }
     }
+    else if (WIFEXITED(status) || WIFSIGNALED(status))
+    {
+      if (!job->notified)
+      {
+        printf("\n[%d] Done: %s\n", job->job_id, job->command);
+        job->notified = 1;
+        remove_job(job->job_id);
+      }
+    }
+  }
+}
+
+/**
+ * Execute a pipeline of commands
+ */
+void execute_with_pipe(char *cmd1, char *cmd2)
+{
+  int pipefd[2];
+  pid_t pid1, pid2;
+  pid_t pgid;
+
+  if (pipe(pipefd) == -1)
+  {
+    perror("pipe error");
+    return;
+  }
+
+  // Create a new process group for the pipeline
+  pgid = 0;
+
+  // First process
+  pid1 = fork();
+  if (pid1 < 0)
+  {
+    perror("fork error");
+    return;
+  }
+
+  if (pid1 == 0)
+  {
+    // Child process 1
+
+    if (shell_is_interactive)
+    {
+      pid_t pid = getpid();
+
+      // First process in the pipeline becomes the process group leader
+      if (pgid == 0)
+      {
+        pgid = pid;
+      }
+
+      setpgid(pid, pgid);
+
+      // Give terminal control to the process group
+      if (tcsetpgrp(shell_terminal, pgid) < 0)
+      {
+        perror("tcsetpgrp failed in first child");
+      }
+
+      // Reset signal handlers
+      signal(SIGINT, SIG_DFL);
+      signal(SIGQUIT, SIG_DFL);
+      signal(SIGTSTP, SIG_DFL);
+      signal(SIGTTIN, SIG_DFL);
+      signal(SIGTTOU, SIG_DFL);
+    }
+
+    close(pipefd[0]); // Close read end
+
+    // Redirect stdout to pipe
+    if (dup2(pipefd[1], STDOUT_FILENO) == -1)
+    {
+      perror("dup2 error");
+      exit(EXIT_FAILURE);
+    }
+    close(pipefd[1]);
+
+    // Parse and execute the command
+    int arg_count;
+    char **args = parse_input(cmd1, &arg_count);
+
+    // Check for built-in commands
+    if (!execute_builtin(args))
+    {
+      // Handle any redirections
+      handle_redirection(args, &arg_count);
+
+      // Execute the command
+      if (execvp(args[0], args) == -1)
+      {
+        perror("exec error");
+        exit(EXIT_FAILURE);
+      }
+    }
+
+    free(args);
+    exit(EXIT_SUCCESS);
+  }
+
+  // Remember pgid for the second process
+  if (pgid == 0)
+  {
+    pgid = pid1;
+  }
+
+  // Make sure first child is in its process group
+  if (shell_is_interactive)
+  {
+    setpgid(pid1, pgid);
+  }
+
+  // Second process
+  pid2 = fork();
+  if (pid2 < 0)
+  {
+    perror("fork error");
+    return;
+  }
+
+  if (pid2 == 0)
+  {
+    // Child process 2
+
+    if (shell_is_interactive)
+    {
+      // Put in the same process group as the first process
+      setpgid(getpid(), pgid);
+
+      // Reset signal handlers
+      signal(SIGINT, SIG_DFL);
+      signal(SIGQUIT, SIG_DFL);
+      signal(SIGTSTP, SIG_DFL);
+      signal(SIGTTIN, SIG_DFL);
+      signal(SIGTTOU, SIG_DFL);
+    }
+
+    close(pipefd[1]); // Close write end
+
+    // Redirect stdin from pipe
+    if (dup2(pipefd[0], STDIN_FILENO) == -1)
+    {
+      perror("dup2 error");
+      exit(EXIT_FAILURE);
+    }
+    close(pipefd[0]);
+
+    // Parse and execute the command
+    int arg_count;
+    char **args = parse_input(cmd2, &arg_count);
+
+    // Check for built-in commands
+    if (!execute_builtin(args))
+    {
+      // Handle any redirections
+      handle_redirection(args, &arg_count);
+
+      // Execute the command
+      if (execvp(args[0], args) == -1)
+      {
+        perror("exec error");
+        exit(EXIT_FAILURE);
+      }
+    }
+
+    free(args);
+    exit(EXIT_SUCCESS);
+  }
+
+  // Parent process
+  if (shell_is_interactive)
+  {
+    // Make sure second child is in the pipeline's process group
+    setpgid(pid2, pgid);
+  }
+
+  // Add job to job list
+  char pipeline_cmd[MAX_INPUT_SIZE];
+  snprintf(pipeline_cmd, MAX_INPUT_SIZE, "%s | %s", cmd1, cmd2);
+  int job_id = add_job(pid1, pgid, pipeline_cmd, 0);
+  job_t *job = &jobs[job_id - 1]; // job_id is 1-based, array is 0-based
+
+  // Close pipe in parent
+  close(pipefd[0]);
+  close(pipefd[1]);
+
+  // Put job in foreground
+  put_job_in_foreground(job, 0);
+
+  // Check if process was stopped
+  if (!job->running)
+  {
+    printf("\n[%d] Stopped: %s\n", job_id, job->command);
+  }
+  else
+  {
+    // Job completed, remove from job list
+    remove_job(job_id);
   }
 }
 
@@ -477,51 +887,12 @@ void check_background_jobs()
  */
 void setup_signal_handlers()
 {
-  struct sigaction sa;
+  // For job control in the shell, most signals are handled by the
+  // signal() calls in init_shell_terminal()
 
-  // Set up SIGINT handler
-  sa.sa_handler = handle_sigint;
-  sigemptyset(&sa.sa_mask);
-  sa.sa_flags = SA_RESTART;
-  if (sigaction(SIGINT, &sa, NULL) == -1)
-  {
-    perror("sigaction error");
-    exit(EXIT_FAILURE);
-  }
-
-  // Set up SIGTSTP handler
-  sa.sa_handler = handle_sigtstp;
-  if (sigaction(SIGTSTP, &sa, NULL) == -1)
-  {
-    perror("sigaction error");
-    exit(EXIT_FAILURE);
-  }
-
-  // Ignore SIGTTOU to prevent the shell from stopping when it tries
-  // to access the terminal while in the background
-  signal(SIGTTOU, SIG_IGN);
-}
-
-/**
- * SIGINT handler (Ctrl+C)
- */
-void handle_sigint(int sig)
-{
-  (void)sig; // Prevent unused parameter warning
-  printf("\n");
-  print_prompt();
-  fflush(stdout);
-}
-
-/**
- * SIGTSTP handler (Ctrl+Z)
- */
-void handle_sigtstp(int sig)
-{
-  (void)sig; // Prevent unused parameter warning
-  printf("\n");
-  print_prompt();
-  fflush(stdout);
+  // Set up custom handlers for Ctrl-C and Ctrl-Z in the shell
+  signal(SIGINT, handle_sigint);
+  signal(SIGTSTP, handle_sigtstp);
 }
 
 /**
@@ -636,245 +1007,6 @@ void handle_redirection(char **args, int *arg_count)
   {
     close(out_fd);
   }
-}
-
-/**
- * Execute a pipeline of commands
- */
-void execute_with_pipe(char *cmd1, char *cmd2)
-{
-  int pipefd[2];
-  pid_t pid1, pid2;
-
-  if (pipe(pipefd) == -1)
-  {
-    perror("pipe error");
-    return;
-  }
-
-  // First process
-  pid1 = fork();
-  if (pid1 < 0)
-  {
-    perror("fork error");
-    return;
-  }
-
-  if (pid1 == 0)
-  {
-    // Child process 1
-    close(pipefd[0]); // Close read end
-
-    // Redirect stdout to pipe
-    if (dup2(pipefd[1], STDOUT_FILENO) == -1)
-    {
-      perror("dup2 error");
-      exit(EXIT_FAILURE);
-    }
-    close(pipefd[1]);
-
-    // Parse and execute the command
-    int arg_count;
-    char **args = parse_input(cmd1, &arg_count);
-
-    // Check for built-in commands
-    if (!execute_builtin(args))
-    {
-      // Handle any redirections
-      handle_redirection(args, &arg_count);
-
-      // Execute the command
-      if (execvp(args[0], args) == -1)
-      {
-        perror("exec error");
-        exit(EXIT_FAILURE);
-      }
-    }
-
-    free(args);
-    exit(EXIT_SUCCESS);
-  }
-
-  // Second process
-  pid2 = fork();
-  if (pid2 < 0)
-  {
-    perror("fork error");
-    return;
-  }
-
-  if (pid2 == 0)
-  {
-    // Child process 2
-    close(pipefd[1]); // Close write end
-
-    // Redirect stdin from pipe
-    if (dup2(pipefd[0], STDIN_FILENO) == -1)
-    {
-      perror("dup2 error");
-      exit(EXIT_FAILURE);
-    }
-    close(pipefd[0]);
-
-    // Parse and execute the command
-    int arg_count;
-    char **args = parse_input(cmd2, &arg_count);
-
-    // Check for built-in commands
-    if (!execute_builtin(args))
-    {
-      // Handle any redirections
-      handle_redirection(args, &arg_count);
-
-      // Execute the command
-      if (execvp(args[0], args) == -1)
-      {
-        perror("exec error");
-        exit(EXIT_FAILURE);
-      }
-    }
-
-    free(args);
-    exit(EXIT_SUCCESS);
-  }
-
-  // Parent process
-  close(pipefd[0]);
-  close(pipefd[1]);
-
-  // Wait for both children to complete
-  waitpid(pid1, NULL, 0);
-  waitpid(pid2, NULL, 0);
-}
-
-/**
- * Parse input and handle pipes, redirections, and background execution
- */
-int parse_and_execute(char *input)
-{
-  // Check for empty input
-  if (input == NULL || strlen(input) == 0)
-  {
-    return 0;
-  }
-
-  // Check for pipes
-  char *pipe_token = strchr(input, '|');
-  if (pipe_token != NULL)
-  {
-    *pipe_token = '\0'; // Split the string at pipe
-    char *cmd1 = input;
-    char *cmd2 = pipe_token + 1;
-
-    // Remove leading spaces from second command
-    while (*cmd2 == ' ' || *cmd2 == '\t')
-    {
-      cmd2++;
-    }
-
-    execute_with_pipe(cmd1, cmd2);
-    return 0;
-  }
-
-  // Check for background execution
-  int background = 0;
-  int len = strlen(input);
-  if (len > 0 && input[len - 1] == '&')
-  {
-    background = 1;
-    input[len - 1] = '\0'; // Remove the & character
-
-    // Remove trailing spaces
-    len = strlen(input);
-    while (len > 0 && (input[len - 1] == ' ' || input[len - 1] == '\t'))
-    {
-      input[len - 1] = '\0';
-      len--;
-    }
-  }
-
-  // Parse the input into command and arguments
-  int arg_count;
-  char **args = parse_input(input, &arg_count);
-
-  // Check for empty command
-  if (args[0] == NULL)
-  {
-    free(args);
-    return 0;
-  }
-
-  // Check for built-in commands
-  if (execute_builtin(args))
-  {
-    free(args);
-    return 0;
-  }
-
-  // Execute the command
-  pid_t pid = fork();
-
-  if (pid == -1)
-  {
-    perror("fork error");
-    free(args);
-    return -1;
-  }
-  else if (pid == 0)
-  {
-    // Child process
-
-    // Reset signal handlers to default for the child
-    signal(SIGINT, SIG_DFL);
-    signal(SIGTSTP, SIG_DFL);
-
-    // Handle redirection
-    handle_redirection(args, &arg_count);
-
-    // Execute the command
-    if (execvp(args[0], args) == -1)
-    {
-      perror("exec error");
-      exit(EXIT_FAILURE);
-    }
-  }
-  else
-  {
-    // Parent process
-
-    // Rebuild command string for job control
-    char command[MAX_INPUT_SIZE] = "";
-    for (int i = 0; i < arg_count; i++)
-    {
-      strcat(command, args[i]);
-      if (i < arg_count - 1)
-      {
-        strcat(command, " ");
-      }
-    }
-
-    if (background)
-    {
-      // Background process
-      int job_id = add_job(pid, command);
-      printf("[%d] %d\n", job_id, pid);
-    }
-    else
-    {
-      // Foreground process
-      int status;
-      waitpid(pid, &status, WUNTRACED);
-
-      // Check if process was stopped
-      if (WIFSTOPPED(status))
-      {
-        printf("\n[%d] Stopped: %s\n", add_job(pid, command), command);
-      }
-    }
-  }
-
-  free(args);
-  return 0;
 }
 
 /**
@@ -1011,4 +1143,178 @@ char **command_completion(const char *text, int start, int end)
   matches = rl_completion_matches(text, command_generator);
 
   return matches;
+}
+
+/**
+ * Initialize the shell's terminal settings and job control
+ */
+void init_shell_terminal()
+{
+  // Check if we're running in a terminal
+  shell_terminal = STDIN_FILENO;
+  shell_is_interactive = isatty(shell_terminal);
+
+  if (shell_is_interactive)
+  {
+    // Loop until we're in the foreground
+    while (tcgetpgrp(shell_terminal) != (shell_pgid = getpgrp()))
+    {
+      kill(-shell_pgid, SIGTTIN);
+    }
+
+    // Ignore interactive and job-control signals
+    signal(SIGINT, SIG_IGN);  // Ctrl-C
+    signal(SIGQUIT, SIG_IGN); // Ctrl-\
+    signal(SIGTSTP, SIG_IGN);  // Ctrl-Z
+    signal(SIGTTIN, SIG_IGN); // Terminal input for bg process
+    signal(SIGTTOU, SIG_IGN); // Terminal output for bg process
+
+    // Put ourselves in our own process group
+    shell_pgid = getpid();
+    if (setpgid(shell_pgid, shell_pgid) < 0)
+    {
+      perror("Couldn't put the shell in its own process group");
+      exit(EXIT_FAILURE);
+    }
+
+    // Grab control of the terminal
+    tcsetpgrp(shell_terminal, shell_pgid);
+
+    // Save default terminal attributes
+    tcgetattr(shell_terminal, &shell_tmodes);
+  }
+}
+
+/**
+ * SIGINT handler (Ctrl+C)
+ */
+void handle_sigint(int sig)
+{
+  (void)sig; // Prevent unused parameter warning
+  printf("\n");
+  // Don't call print_prompt here as we use readline
+  // just print a newline and let readline handle the rest
+  rl_on_new_line();
+  rl_redisplay();
+}
+
+/**
+ * SIGTSTP handler (Ctrl+Z)
+ */
+void handle_sigtstp(int sig)
+{
+  (void)sig; // Prevent unused parameter warning
+  printf("\n");
+  // Don't call print_prompt here as we use readline
+  // just print a newline and let readline handle the rest
+  rl_on_new_line();
+  rl_redisplay();
+}
+
+/**
+ * Parse input and handle pipes, redirections, and background execution
+ */
+int parse_and_execute(char *input)
+{
+  // Check for empty input
+  if (input == NULL || strlen(input) == 0)
+  {
+    return 0;
+  }
+
+  // Check for pipes
+  char *pipe_token = strchr(input, '|');
+  if (pipe_token != NULL)
+  {
+    *pipe_token = '\0'; // Split the string at pipe
+    char *cmd1 = input;
+    char *cmd2 = pipe_token + 1;
+
+    // Remove leading spaces from second command
+    while (*cmd2 == ' ' || *cmd2 == '\t')
+    {
+      cmd2++;
+    }
+
+    execute_with_pipe(cmd1, cmd2);
+    return 0;
+  }
+
+  // Check for background execution
+  int background = 0;
+  int len = strlen(input);
+  if (len > 0 && input[len - 1] == '&')
+  {
+    background = 1;
+    input[len - 1] = '\0'; // Remove the & character
+
+    // Remove trailing spaces
+    len = strlen(input);
+    while (len > 0 && (input[len - 1] == ' ' || input[len - 1] == '\t'))
+    {
+      input[len - 1] = '\0';
+      len--;
+    }
+  }
+
+  // Parse the input into command and arguments
+  int arg_count;
+  char **args = parse_input(input, &arg_count);
+
+  // Check for empty command
+  if (args[0] == NULL)
+  {
+    free(args);
+    return 0;
+  }
+
+  // Check for built-in commands
+  if (execute_builtin(args))
+  {
+    free(args);
+    return 0;
+  }
+
+  // Execute the command
+  execute_command(args, arg_count, background);
+
+  free(args);
+  return 0;
+}
+
+/**
+ * Remove job from job list
+ */
+void remove_job(int job_id)
+{
+  for (int i = 0; i < MAX_JOBS; i++)
+  {
+    if (jobs[i].job_id == job_id)
+    {
+      jobs[i].pid = -1;
+      jobs[i].pgid = -1;
+      jobs[i].job_id = -1;
+      jobs[i].running = 0;
+      jobs[i].foreground = 0;
+      jobs[i].notified = 0;
+      jobs[i].command[0] = '\0';
+      job_count--;
+      break;
+    }
+  }
+}
+
+/**
+ * List all jobs
+ */
+void list_jobs()
+{
+  for (int i = 0; i < MAX_JOBS; i++)
+  {
+    if (jobs[i].pid != -1)
+    {
+      const char *status = jobs[i].running ? "Running" : "Stopped";
+      printf("[%d] %d %s\t%s\n", jobs[i].job_id, jobs[i].pid, status, jobs[i].command);
+    }
+  }
 }
