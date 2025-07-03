@@ -5,8 +5,8 @@ TARGET = ash
 
 all: $(TARGET)
 
-$(TARGET): shell.c
-	$(CC) $(CFLAGS) -o $(TARGET) shell.c $(LDFLAGS)
+$(TARGET): shell.c vars.c
+	$(CC) $(CFLAGS) -o $(TARGET) shell.c vars.c $(LDFLAGS)
 
 clean:
 	rm -f $(TARGET) *.o

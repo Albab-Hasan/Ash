@@ -24,6 +24,7 @@
 #include <dirent.h>
 #include <termios.h>   /* Terminal control */
 #include <sys/ioctl.h> /* ioctl for terminal control */
+#include "vars.h"
 
 #define MAX_INPUT_SIZE 1024
 #define MAX_ARGS 64
@@ -364,6 +365,35 @@ int execute_builtin(char **args)
     }
 
     fprintf(stderr, "bg: no such job: %d\n", job_id);
+    return 1;
+  }
+
+  // source command
+  if (strcmp(args[0], "source") == 0)
+  {
+    if (args[1] == NULL)
+    {
+      fprintf(stderr, "source: filename required\n");
+      return 1;
+    }
+    FILE *fp = fopen(args[1], "r");
+    if (!fp)
+    {
+      perror("source");
+      return 1;
+    }
+    char line[MAX_INPUT_SIZE];
+    while (fgets(line, sizeof(line), fp))
+    {
+      // Remove trailing newline
+      size_t len = strlen(line);
+      if (len > 0 && line[len - 1] == '\n')
+      {
+        line[len - 1] = '\0';
+      }
+      parse_and_execute(line);
+    }
+    fclose(fp);
     return 1;
   }
 
@@ -1164,8 +1194,8 @@ void init_shell_terminal()
 
     // Ignore interactive and job-control signals
     signal(SIGINT, SIG_IGN);  // Ctrl-C
-    signal(SIGQUIT, SIG_IGN); // Ctrl-\
-    signal(SIGTSTP, SIG_IGN);  // Ctrl-Z
+    signal(SIGQUIT, SIG_IGN); /* Ctrl-\ */
+    signal(SIGTSTP, SIG_IGN); // Ctrl-Z
     signal(SIGTTIN, SIG_IGN); // Terminal input for bg process
     signal(SIGTTOU, SIG_IGN); // Terminal output for bg process
 
@@ -1274,6 +1304,34 @@ int parse_and_execute(char *input)
     free(args);
     return 0;
   }
+
+  // Check for assignment(s)
+  int all_assignments = 1;
+  for (int i = 0; i < arg_count; i++)
+  {
+    char *eq = strchr(args[i], '=');
+    if (eq == NULL || eq == args[i])
+    {
+      all_assignments = 0;
+      break;
+    }
+  }
+  if (all_assignments)
+  {
+    for (int i = 0; i < arg_count; i++)
+    {
+      char *eq = strchr(args[i], '=');
+      *eq = '\0';
+      const char *name = args[i];
+      const char *value = eq + 1;
+      set_var(name, value);
+    }
+    free(args);
+    return 0;
+  }
+
+  // Expand variables in arguments
+  expand_vars(args, arg_count);
 
   // Execute the command
   execute_command(args, arg_count, background);
