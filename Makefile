@@ -3,12 +3,28 @@ CFLAGS = -Wall -Wextra -g
 LDFLAGS = -lreadline
 TARGET = ash
 
+TESTS = tests/test_vars tests/test_tokenizer
+
 all: $(TARGET)
 
-$(TARGET): shell.c vars.c
-	$(CC) $(CFLAGS) -o $(TARGET) shell.c vars.c $(LDFLAGS)
+$(TARGET): shell.c vars.c parser.c tokenizer.c
+	$(CC) $(CFLAGS) -o $(TARGET) shell.c vars.c parser.c tokenizer.c $(LDFLAGS)
+
+# ---------------- Tests ----------------
+tests/test_vars: tests/test_vars.c vars.c vars.h
+	$(CC) $(CFLAGS) -o $@ tests/test_vars.c vars.c
+
+tests/test_tokenizer: tests/test_tokenizer.c tokenizer.c tokenizer.h
+	$(CC) $(CFLAGS) -o $@ tests/test_tokenizer.c tokenizer.c
+
+test: $(TESTS)
+	@for t in $(TESTS); do \
+		echo "Running $$t"; \
+		./$$t || exit 1; \
+	done; \
+	echo "All unit tests passed"
 
 clean:
-	rm -f $(TARGET) *.o
+	rm -f $(TARGET) *.o $(TESTS)
 
-.PHONY: all clean
+.PHONY: all clean test

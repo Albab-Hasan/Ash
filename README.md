@@ -199,3 +199,13 @@ fi
 ```
 
 Run it with `./ash demo.ash` or from the prompt with `source demo.ash`.
+
+## Running Unit Tests
+
+Basic unit tests for the variable store and tokenizer live under `tests/`.
+
+```bash
+make test
+```
+
+You should see each individual test executable run and `All unit tests passed` when everything is green.
