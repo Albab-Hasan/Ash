@@ -60,6 +60,76 @@ static void exec_block(char **lines, int start, int end)
 // simplistic line reader storage
 #define MAX_LINES 512
 
+// ---------------- Function support ------------------
+#define MAX_FUNCS 32
+typedef struct
+{
+  char name[64];
+  char **body; // array of duplicated lines
+  int line_count;
+} func_t;
+
+static func_t funcs[MAX_FUNCS];
+
+/* Forward declarations (implementations appear below definitions) */
+static int find_func(const char *name);
+static int store_function(char *name, char **lines, int start, int end);
+static int execute_function(const char *name, char **argv, int argc);
+
+// after function table definitions and before parse_stream
+static int find_func(const char *name)
+{
+  for (int i = 0; i < MAX_FUNCS; i++)
+  {
+    if (funcs[i].line_count > 0 && strcmp(funcs[i].name, name) == 0)
+      return i;
+  }
+  return -1;
+}
+
+static int store_function(char *name, char **lines, int start, int end)
+{
+  int idx = find_func(name);
+  if (idx == -1)
+  {
+    // find empty slot
+    for (int i = 0; i < MAX_FUNCS; i++)
+      if (funcs[i].line_count == 0)
+      {
+        idx = i;
+        break;
+      }
+  }
+  if (idx == -1)
+    return -1; // table full
+  strncpy(funcs[idx].name, name, sizeof(funcs[idx].name) - 1);
+  int cnt = end - start;
+  funcs[idx].body = malloc(cnt * sizeof(char *));
+  for (int k = 0; k < cnt; k++)
+  {
+    funcs[idx].body[k] = strdup(lines[start + k]);
+  }
+  funcs[idx].line_count = cnt;
+  return 0;
+}
+
+static int execute_function(const char *name, char **argv, int argc)
+{
+  int idx = find_func(name);
+  if (idx == -1)
+    return -1;
+  // positional parameters
+  for (int i = 1; i < argc; i++)
+  {
+    char num[16];
+    snprintf(num, sizeof(num), "%d", i);
+    set_var(num, argv[i]);
+  }
+  reset_loop_flag();
+  exec_block(funcs[idx].body, 0, funcs[idx].line_count);
+  return 0;
+}
+
 ASTNode *parse_stream(FILE *fp)
 {
   char *lines[MAX_LINES];
@@ -385,6 +455,9 @@ ASTNode *parse_stream(FILE *fp)
             item = strtok_r(NULL, " \t", &saveptr);
             continue; /* continue next item */
           }
+
+          /* Normal progression */
+          item = strtok_r(NULL, " \t", &saveptr);
         }
       }
 
