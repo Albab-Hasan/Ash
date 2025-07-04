@@ -29,38 +29,20 @@
 #include "shell.h"
 #include "parser.h"
 #include "tokenizer.h"
+#include "builtins.h"
+#include "history.h"
+#include "jobs.h"
+#include "terminal.h"
+#include "io.h"
 
 #define MAX_INPUT_SIZE 1024
 #define MAX_ARGS 64
 #define MAX_HISTORY 100
-#define MAX_JOBS 32
 
-// Job control structure
-typedef struct job
-{
-  pid_t pid;                    // Process ID
-  pid_t pgid;                   // Process group ID
-  int job_id;                   // Job ID
-  char command[MAX_INPUT_SIZE]; // Command string
-  int running;                  // 1 if running, 0 if stopped
-  int foreground;               // 1 if foreground, 0 if background
-  int notified;                 // 1 if user was notified of status change
-} job_t;
-
-// Global variables
-char history[MAX_HISTORY][MAX_INPUT_SIZE];
-int history_count = 0;
-job_t jobs[MAX_JOBS];
-int job_count = 0;
+// Job control structures are defined in jobs.c
 
 // Last command exit status (0 = success)
 int last_status = 0;
-
-// Terminal control globals
-static pid_t shell_pgid;
-static int shell_terminal;
-static struct termios shell_tmodes;
-static int shell_is_interactive;
 
 // Function declarations
 void print_prompt();
@@ -70,25 +52,18 @@ int execute_command(char **args, int arg_count, int background);
 int execute_builtin(char **args);
 void add_to_history(const char *command);
 void show_history();
-void setup_signal_handlers();
-void handle_sigint(int sig);
-void handle_sigtstp(int sig);
 void check_background_jobs();
-int add_job(pid_t pid, pid_t pgid, const char *command, int bg);
-void remove_job(int job_id);
-void list_jobs();
 int parse_and_execute(char *input);
 void execute_with_pipe(char *cmd1, char *cmd2);
-void handle_redirection(char **args, int *arg_count);
+/* redirection helpers in io.h */
 void initialize_readline();
 char *command_generator(const char *text, int state);
 char **command_completion(const char *text, int start, int end);
 
 // New terminal control functions
-void init_shell_terminal();
+/* init_shell_terminal moved to terminal.c */
 void put_job_in_foreground(job_t *job, int cont);
 void put_job_in_background(job_t *job, int cont);
-job_t *find_job_by_pid(pid_t pid);
 void wait_for_job(job_t *job);
 void mark_job_as_running(job_t *job);
 void continue_job(job_t *job, int foreground);
@@ -158,16 +133,8 @@ int main(int argc, char *argv[])
 {
   char *input;
 
-  // Initialize job array
-  for (int i = 0; i < MAX_JOBS; i++)
-  {
-    jobs[i].pid = -1;
-    jobs[i].pgid = -1;
-    jobs[i].job_id = -1;
-    jobs[i].running = 0;
-    jobs[i].foreground = 0;
-    jobs[i].notified = 0;
-  }
+  // Initialize job subsystem
+  jobs_init();
 
   /* Handle -c option to execute a single command and exit */
   if (argc > 1 && strcmp(argv[1], "-c") == 0)
@@ -227,10 +194,10 @@ int main(int argc, char *argv[])
   }
 
   // Initialize terminal and set up job control
-  init_shell_terminal();
+  terminal_init();
 
-  // Set up signal handlers
-  setup_signal_handlers();
+  // Set up signal handlers (Ctrl-C / Ctrl-Z for readline)
+  terminal_install_signal_handlers();
 
   // Initialize readline
   initialize_readline();
@@ -356,36 +323,6 @@ char **parse_input(char *input, int *arg_count)
 }
 
 /**
- * Add command to history
- */
-void add_to_history(const char *command)
-{
-  if (history_count == MAX_HISTORY)
-  {
-    // Shift history entries to make room
-    for (int i = 1; i < MAX_HISTORY; i++)
-    {
-      strcpy(history[i - 1], history[i]);
-    }
-    history_count--;
-  }
-
-  strcpy(history[history_count], command);
-  history_count++;
-}
-
-/**
- * Show command history
- */
-void show_history()
-{
-  for (int i = 0; i < history_count; i++)
-  {
-    printf("%d: %s\n", i + 1, history[i]);
-  }
-}
-
-/**
  * Handle built-in commands
  */
 int execute_builtin(char **args)
@@ -395,37 +332,12 @@ int execute_builtin(char **args)
     return 1;
   }
 
-  // cd command
-  if (strcmp(args[0], "cd") == 0)
+  /* Delegate simple built-ins (cd, exit, source, export, let, etc.) to the
+     new builtins.c implementation.  If it handled the command it returns 1
+     and we can stop here. */
+  if (handle_simple_builtin(args))
   {
-    if (args[1] == NULL)
-    {
-      // Default to home directory
-      if (chdir(getenv("HOME")) != 0)
-      {
-        perror("cd error");
-        last_status = 1;
-        return 1;
-      }
-    }
-    else
-    {
-      if (chdir(args[1]) != 0)
-      {
-        perror("cd error");
-        last_status = 1;
-        return 1;
-      }
-    }
-    last_status = 0;
     return 1;
-  }
-
-  // exit command
-  if (strcmp(args[0], "exit") == 0)
-  {
-    printf("Exiting shell...\n");
-    exit(EXIT_SUCCESS);
   }
 
   // history command
@@ -497,63 +409,6 @@ int execute_builtin(char **args)
 
     fprintf(stderr, "bg: no such job: %d\n", job_id);
     last_status = 1;
-    return 1;
-  }
-
-  // source command
-  if (strcmp(args[0], "source") == 0)
-  {
-    if (args[1] == NULL)
-    {
-      fprintf(stderr, "source: filename required\n");
-      last_status = 1;
-      return 1;
-    }
-
-    FILE *fp = fopen(args[1], "r");
-    if (!fp)
-    {
-      perror("source");
-      last_status = 1;
-      return 1;
-    }
-
-    /* Reuse the same parser used for non-interactive scripts */
-    parse_stream(fp);
-    fclose(fp);
-    return 1;
-  }
-
-  // export command
-  if (strcmp(args[0], "export") == 0)
-  {
-    if (args[1] == NULL)
-    {
-      fprintf(stderr, "export: variable name required\n");
-      last_status = 1;
-      return 1;
-    }
-
-    for (int i = 1; args[i]; i++)
-    {
-      char *eq = strchr(args[i], '=');
-      if (eq && eq != args[i])
-      {
-        *eq = '\0';
-        const char *name = args[i];
-        const char *value = eq + 1;
-        set_var(name, value);
-        setenv(name, value, 1);
-      }
-      else
-      {
-        if (export_var(args[i]) != 0)
-        {
-          fprintf(stderr, "export: %s: undefined variable\n", args[i]);
-          last_status = 1;
-        }
-      }
-    }
     return 1;
   }
 
@@ -785,21 +640,6 @@ void wait_for_job(job_t *job)
 }
 
 /**
- * Find job by pid
- */
-job_t *find_job_by_pid(pid_t pid)
-{
-  for (int i = 0; i < MAX_JOBS; i++)
-  {
-    if (jobs[i].pid == pid)
-    {
-      return &jobs[i];
-    }
-  }
-  return NULL;
-}
-
-/**
  * Mark job as running
  */
 void mark_job_as_running(job_t *job)
@@ -826,69 +666,6 @@ void continue_job(job_t *job, int foreground)
   else
   {
     put_job_in_background(job, 1);
-  }
-}
-
-/**
- * Add job to job list
- */
-int add_job(pid_t pid, pid_t pgid, const char *command, int bg)
-{
-  for (int i = 0; i < MAX_JOBS; i++)
-  {
-    if (jobs[i].pid == -1)
-    {
-      jobs[i].pid = pid;
-      jobs[i].pgid = pgid;
-      jobs[i].job_id = i + 1;
-      jobs[i].running = 1;
-      jobs[i].foreground = !bg;
-      jobs[i].notified = 0;
-      strcpy(jobs[i].command, command);
-      job_count++;
-      return jobs[i].job_id;
-    }
-  }
-
-  fprintf(stderr, "Too many jobs\n");
-  return -1;
-}
-
-/**
- * Check for completed background jobs
- */
-void check_background_jobs()
-{
-  pid_t pid;
-  int status;
-
-  while ((pid = waitpid(-1, &status, WNOHANG | WUNTRACED)) > 0)
-  {
-    job_t *job = find_job_by_pid(pid);
-
-    if (job == NULL)
-    {
-      continue;
-    }
-
-    if (WIFSTOPPED(status))
-    {
-      job->running = 0;
-      if (!job->notified)
-      {
-        printf("\n[%d] Stopped: %s\n", job->job_id, job->command);
-        job->notified = 1;
-      }
-    }
-    else if (WIFEXITED(status) || WIFSIGNALED(status))
-    {
-      if (!job->notified)
-      {
-        printf("\n[%d] Done: %s\n", job->job_id, job->command);
-        job->notified = 1;
-        remove_job(job->job_id);
-      }
-    }
   }
 }
 
@@ -1091,133 +868,6 @@ void execute_with_pipe(char *cmd1, char *cmd2)
 }
 
 /**
- * Set up signal handlers
- */
-void setup_signal_handlers()
-{
-  // For job control in the shell, most signals are handled by the
-  // signal() calls in init_shell_terminal()
-
-  // Set up custom handlers for Ctrl-C and Ctrl-Z in the shell
-  signal(SIGINT, handle_sigint);
-  signal(SIGTSTP, handle_sigtstp);
-}
-
-/**
- * Handle I/O redirection
- */
-void handle_redirection(char **args, int *arg_count)
-{
-  int i;
-  int in_fd = -1, out_fd = -1;
-
-  for (i = 0; i < *arg_count; i++)
-  {
-    if (args[i] == NULL)
-    {
-      break;
-    }
-
-    // Input redirection
-    if (strcmp(args[i], "<") == 0)
-    {
-      if (args[i + 1] == NULL)
-      {
-        fprintf(stderr, "Error: Missing filename after <\n");
-        exit(EXIT_FAILURE);
-      }
-
-      in_fd = open(args[i + 1], O_RDONLY);
-      if (in_fd == -1)
-      {
-        perror("open error");
-        exit(EXIT_FAILURE);
-      }
-
-      // Redirect stdin
-      if (dup2(in_fd, STDIN_FILENO) == -1)
-      {
-        perror("dup2 error");
-        exit(EXIT_FAILURE);
-      }
-
-      // Remove redirection symbols and filename from arguments
-      args[i] = NULL;
-      *arg_count = i;
-      break;
-    }
-
-    // Output redirection (overwrite)
-    else if (strcmp(args[i], ">") == 0)
-    {
-      if (args[i + 1] == NULL)
-      {
-        fprintf(stderr, "Error: Missing filename after >\n");
-        exit(EXIT_FAILURE);
-      }
-
-      out_fd = open(args[i + 1], O_WRONLY | O_CREAT | O_TRUNC, 0644);
-      if (out_fd == -1)
-      {
-        perror("open error");
-        exit(EXIT_FAILURE);
-      }
-
-      // Redirect stdout
-      if (dup2(out_fd, STDOUT_FILENO) == -1)
-      {
-        perror("dup2 error");
-        exit(EXIT_FAILURE);
-      }
-
-      // Remove redirection symbols and filename from arguments
-      args[i] = NULL;
-      *arg_count = i;
-      break;
-    }
-
-    // Output redirection (append)
-    else if (strcmp(args[i], ">>") == 0)
-    {
-      if (args[i + 1] == NULL)
-      {
-        fprintf(stderr, "Error: Missing filename after >>\n");
-        exit(EXIT_FAILURE);
-      }
-
-      out_fd = open(args[i + 1], O_WRONLY | O_CREAT | O_APPEND, 0644);
-      if (out_fd == -1)
-      {
-        perror("open error");
-        exit(EXIT_FAILURE);
-      }
-
-      // Redirect stdout
-      if (dup2(out_fd, STDOUT_FILENO) == -1)
-      {
-        perror("dup2 error");
-        exit(EXIT_FAILURE);
-      }
-
-      // Remove redirection symbols and filename from arguments
-      args[i] = NULL;
-      *arg_count = i;
-      break;
-    }
-  }
-
-  // Close file descriptors after redirection
-  if (in_fd != -1)
-  {
-    close(in_fd);
-  }
-  if (out_fd != -1)
-  {
-    close(out_fd);
-  }
-}
-
-/**
  * Initialize readline with our custom settings
  */
 void initialize_readline()
@@ -1354,72 +1004,6 @@ char **command_completion(const char *text, int start, int end)
 }
 
 /**
- * Initialize the shell's terminal settings and job control
- */
-void init_shell_terminal()
-{
-  // Check if we're running in a terminal
-  shell_terminal = STDIN_FILENO;
-  shell_is_interactive = isatty(shell_terminal);
-
-  if (shell_is_interactive)
-  {
-    // Loop until we're in the foreground
-    while (tcgetpgrp(shell_terminal) != (shell_pgid = getpgrp()))
-    {
-      kill(-shell_pgid, SIGTTIN);
-    }
-
-    // Ignore interactive and job-control signals
-    signal(SIGINT, SIG_IGN);  // Ctrl-C
-    signal(SIGQUIT, SIG_IGN); /* Ctrl-\ */
-    signal(SIGTSTP, SIG_IGN); // Ctrl-Z
-    signal(SIGTTIN, SIG_IGN); // Terminal input for bg process
-    signal(SIGTTOU, SIG_IGN); // Terminal output for bg process
-
-    // Put ourselves in our own process group
-    shell_pgid = getpid();
-    if (setpgid(shell_pgid, shell_pgid) < 0)
-    {
-      perror("Couldn't put the shell in its own process group");
-      exit(EXIT_FAILURE);
-    }
-
-    // Grab control of the terminal
-    tcsetpgrp(shell_terminal, shell_pgid);
-
-    // Save default terminal attributes
-    tcgetattr(shell_terminal, &shell_tmodes);
-  }
-}
-
-/**
- * SIGINT handler (Ctrl+C)
- */
-void handle_sigint(int sig)
-{
-  (void)sig; // Prevent unused parameter warning
-  printf("\n");
-  // Don't call print_prompt here as we use readline
-  // just print a newline and let readline handle the rest
-  rl_on_new_line();
-  rl_redisplay();
-}
-
-/**
- * SIGTSTP handler (Ctrl+Z)
- */
-void handle_sigtstp(int sig)
-{
-  (void)sig; // Prevent unused parameter warning
-  printf("\n");
-  // Don't call print_prompt here as we use readline
-  // just print a newline and let readline handle the rest
-  rl_on_new_line();
-  rl_redisplay();
-}
-
-/**
  * Parse input and handle pipes, redirections, and background execution
  */
 int parse_and_execute(char *input)
@@ -1536,41 +1120,4 @@ int parse_and_execute(char *input)
   free_tokens(args);
 
   return 0;
-}
-
-/**
- * Remove job from job list
- */
-void remove_job(int job_id)
-{
-  for (int i = 0; i < MAX_JOBS; i++)
-  {
-    if (jobs[i].job_id == job_id)
-    {
-      jobs[i].pid = -1;
-      jobs[i].pgid = -1;
-      jobs[i].job_id = -1;
-      jobs[i].running = 0;
-      jobs[i].foreground = 0;
-      jobs[i].notified = 0;
-      jobs[i].command[0] = '\0';
-      job_count--;
-      break;
-    }
-  }
-}
-
-/**
- * List all jobs
- */
-void list_jobs()
-{
-  for (int i = 0; i < MAX_JOBS; i++)
-  {
-    if (jobs[i].pid != -1)
-    {
-      const char *status = jobs[i].running ? "Running" : "Stopped";
-      printf("[%d] %d %s\t%s\n", jobs[i].job_id, jobs[i].pid, status, jobs[i].command);
-    }
-  }
 }

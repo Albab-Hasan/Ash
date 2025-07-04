@@ -1,8 +1,30 @@
 # ASH - A Unix-like Shell Implementation
 
-A custom shell implementation in C that mimics the behavior of standard Unix shells like bash or sh.
+A custom shell implementation in C that mimics the behavior of standard Unix shells like **bash** or **sh**.
 
-> **⚠️ Note:** AI assistance (Claude 3.7) was used for comment generation and explanation polishing, but all code logic and implementation were written manually.
+> **⚠️ Note:** AI assistance (ChatGPT) was used for comment generation and explanation polishing, but all core logic and implementation were written manually.
+
+## Project Layout (2025-06 Refactor)
+
+```
+ash/
+├── src/               # all .c files
+│   ├── shell.c        # entry point / main loop
+│   ├── terminal.c     # tty + signal helpers
+│   ├── jobs.c         # job-control API
+│   ├── io.c           # I/O redirection helpers
+│   ├── builtins.c     # cd, exit, export …
+│   ├── history.c      # readline + history ring
+│   ├── parser.c       # scripting language
+│   ├── tokenizer.c    # lexer
+│   ├── vars.c         # variable store
+│   └── arith.c        # $(( … )) evaluator
+├── include/           # public headers (added to include-path)
+├── tests/             # lightweight unit tests (invoke `make test`)
+├── Makefile           # pattern-rule build, `test` target
+├── .clang-format      # Google-style, 2-space indent
+└── .editorconfig      # editor-agnostic whitespace settings
+```
 
 ## Features
 
@@ -30,35 +52,49 @@ A custom shell implementation in C that mimics the behavior of standard Unix she
 
 ### Requirements
 
-- GCC compiler
-- Linux/Unix environment
-- Readline development library (`libreadline-dev` on Debian/Ubuntu, `readline-devel` on CentOS/RHEL)
+- GCC (tested with ≥ 11)
+- POSIX-compatible OS (Linux, *BSD, macOS)
+- Development headers for `readline` (`sudo apt install libreadline-dev` on Debian/Ubuntu)
+- GNU Make 4+
 
 ### Building the Shell
 
 ```bash
-make
+make        # builds src/*.c into ./ash
 ```
 
 This will compile the code and create the executable `ash`.
 
 ### Running the Shell
 
+Interactive shell:
 ```bash
 ./ash
 ```
-
-### One-off command (-c)
-
+Non-interactive script:
 ```bash
-./ash -c "export FOO=bar; env | grep FOO"
+./ash script.ash arg1 arg2
+```
+One-off command:
+```bash
+./ash -c 'echo $((2+2))'
 ```
 
 ### Cleaning Up
 
 ```bash
-make clean
+# rebuild from scratch
+make clean && make
+
+# run unit tests
+make test
 ```
+
+### Coding Style & Tooling
+
+• A project-wide **Google-style** `.clang-format` is provided; run `clang-format -i <file>`.
+• `.editorconfig` keeps editors in sync (UTF-8, LF, 2-space indent, trim trailing whitespace).
+• CI recommendation: `clang-format --dry-run --Werror $(SRC)`.
 
 ## Usage Examples
 
@@ -240,3 +276,49 @@ You should see each individual test executable run and `All unit tests passed` w
 
 ### Notes
 • In the examples, text after the `#` symbol is a comment; do **not** paste the `# …` part into your terminal.
+
+## Installation
+
+```bash
+# clone
+git clone https://github.com/Albab-Hasan/Ash.git
+cd ash
+
+# build
+make            # produces ./ash
+make test       # optional: run unit tests
+sudo make install  # copies ash to /usr/local/bin (optional target)
+```
+
+## Development Workflow
+
+1. **Format** – run `clang-format -i $(git ls-files '*.c' '*.h')` before committing.
+2. **Build**   – `make` (or `make debug` for ASan/UBSan, see Makefile).
+3. **Test**    – `make test`.
+4. **Run**     – `./ash`.
+
+Continuous integration can use:
+```bash
+make && make test && clang-format --dry-run --Werror $(git ls-files '*.c' '*.h')
+```
+
+## Contributing
+
+Pull requests are welcome!  Please:
+1. Follow the coding style (clang-format config).
+2. Add unit tests for new behaviour in `tests/`.
+3. Keep functions small and modular—new subsystems get their own `src/*.c` and header.
+4. Document new user-facing features in this README.
+
+## License
+
+This project is released under the MIT License (see `LICENSE`).
+
+## Roadmap
+
+- [ ] N-stage pipelines (currently limited to two commands)
+- [ ] Command substitution `$(…)` & back-quotes
+- [ ] Globbing / wild-cards expansion
+- [ ] Heredoc (`<<EOF`)
+- [ ] Built-in `alias` support
+- [ ] Cross-platform test suite in GitHub Actions

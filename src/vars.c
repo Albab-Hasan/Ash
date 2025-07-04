@@ -1,4 +1,5 @@
 #include "vars.h"
+#include "arith.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -63,12 +64,33 @@ const char *get_var(const char *name)
   return NULL;
 }
 
+/**
+ * Export a shell variable to the process environment so child processes inherit it.
+ * If the variable is not defined, returns -1. Otherwise, calls setenv() and returns its result.
+ */
+int export_var(const char *name)
+{
+  const char *val = get_var(name);
+  if (!val)
+  {
+    return -1;
+  }
+  return setenv(name, val, 1); /* overwrite = 1 */
+}
+
 void expand_vars(char **args, int arg_count)
 {
   for (int i = 0; i < arg_count; i++)
   {
     if (args[i] == NULL)
       continue;
+    /* arithmetic expansion */
+    char *arith = expand_arith_subst(args[i]);
+    if (arith)
+    {
+      args[i] = arith;
+    }
+
     if (args[i][0] == '$')
     {
       const char *val = get_var(args[i] + 1);
@@ -78,7 +100,6 @@ void expand_vars(char **args, int arg_count)
       }
       else
       {
-        // undefined => empty string
         args[i] = "";
       }
     }
