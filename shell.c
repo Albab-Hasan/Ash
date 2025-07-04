@@ -24,6 +24,7 @@
 #include <dirent.h>
 #include <termios.h>   /* Terminal control */
 #include <sys/ioctl.h> /* ioctl for terminal control */
+#include <ctype.h>
 #include "vars.h"
 #include "shell.h"
 #include "parser.h"
@@ -51,6 +52,9 @@ char history[MAX_HISTORY][MAX_INPUT_SIZE];
 int history_count = 0;
 job_t jobs[MAX_JOBS];
 int job_count = 0;
+
+// Last command exit status (0 = success)
+int last_status = 0;
 
 // Terminal control globals
 static pid_t shell_pgid;
@@ -101,6 +105,52 @@ static char *trim(char *s)
   return s;
 }
 
+// after trim helper
+static char *find_logic_op(char *s, int *is_and)
+{
+  enum
+  {
+    NORM,
+    SQ,
+    DQ
+  } st = NORM;
+  for (char *p = s; *p; p++)
+  {
+    if (st == NORM)
+    {
+      if (*p == '\'')
+        st = SQ;
+      else if (*p == '"')
+        st = DQ;
+      else if (*p == '&' && *(p + 1) == '&')
+      {
+        *is_and = 1;
+        return p;
+      }
+      else if (*p == '|' && *(p + 1) == '|')
+      {
+        *is_and = 0;
+        return p;
+      }
+      else if (*p == '\\')
+        p++; // skip escaped char
+    }
+    else if (st == SQ)
+    {
+      if (*p == '\'')
+        st = NORM;
+    }
+    else if (st == DQ)
+    {
+      if (*p == '"')
+        st = NORM;
+      else if (*p == '\\' && *(p + 1))
+        p++;
+    }
+  }
+  return NULL;
+}
+
 /**
  * Main function - shell entry point
  */
@@ -128,21 +178,27 @@ int main(int argc, char *argv[])
       return 1;
     }
 
-    /* Split the command string on semicolons and run each sequentially */
-    char cmd_buf[MAX_INPUT_SIZE];
-    strncpy(cmd_buf, argv[2], sizeof(cmd_buf) - 1);
-    cmd_buf[sizeof(cmd_buf) - 1] = '\0';
-
-    char *ctx = NULL;
-    char *segment = strtok_r(cmd_buf, ";", &ctx);
-    while (segment)
+    /* Copy command string and translate semicolons to newlines so that our script
+       parser can understand multi-command one-liner including loops. */
+    size_t len_cmd = strlen(argv[2]);
+    char *script = malloc(len_cmd + 2); /* +1 for possible newline +1 for NUL */
+    for (size_t i = 0; i < len_cmd; i++)
     {
-      segment = trim(segment);
-      if (*segment)
-        parse_and_execute(segment);
-      segment = strtok_r(NULL, ";", &ctx);
+      script[i] = (argv[2][i] == ';') ? '\n' : argv[2][i];
     }
+    script[len_cmd] = '\n';
+    script[len_cmd + 1] = '\0';
 
+    FILE *fp = fmemopen(script, len_cmd + 1, "r");
+    if (!fp)
+    {
+      perror("fmemopen");
+      free(script);
+      return 1;
+    }
+    parse_stream(fp);
+    fclose(fp);
+    free(script);
     return 0;
   }
 
@@ -348,6 +404,8 @@ int execute_builtin(char **args)
       if (chdir(getenv("HOME")) != 0)
       {
         perror("cd error");
+        last_status = 1;
+        return 1;
       }
     }
     else
@@ -355,8 +413,11 @@ int execute_builtin(char **args)
       if (chdir(args[1]) != 0)
       {
         perror("cd error");
+        last_status = 1;
+        return 1;
       }
     }
+    last_status = 0;
     return 1;
   }
 
@@ -371,6 +432,7 @@ int execute_builtin(char **args)
   if (strcmp(args[0], "history") == 0)
   {
     show_history();
+    last_status = 0;
     return 1;
   }
 
@@ -378,6 +440,7 @@ int execute_builtin(char **args)
   if (strcmp(args[0], "jobs") == 0)
   {
     list_jobs();
+    last_status = 0;
     return 1;
   }
 
@@ -387,6 +450,7 @@ int execute_builtin(char **args)
     if (args[1] == NULL)
     {
       fprintf(stderr, "fg: job id required\n");
+      last_status = 1;
       return 1;
     }
 
@@ -404,6 +468,7 @@ int execute_builtin(char **args)
     }
 
     fprintf(stderr, "fg: no such job: %d\n", job_id);
+    last_status = 1;
     return 1;
   }
 
@@ -413,6 +478,7 @@ int execute_builtin(char **args)
     if (args[1] == NULL)
     {
       fprintf(stderr, "bg: job id required\n");
+      last_status = 1;
       return 1;
     }
 
@@ -430,6 +496,7 @@ int execute_builtin(char **args)
     }
 
     fprintf(stderr, "bg: no such job: %d\n", job_id);
+    last_status = 1;
     return 1;
   }
 
@@ -439,6 +506,7 @@ int execute_builtin(char **args)
     if (args[1] == NULL)
     {
       fprintf(stderr, "source: filename required\n");
+      last_status = 1;
       return 1;
     }
 
@@ -446,6 +514,7 @@ int execute_builtin(char **args)
     if (!fp)
     {
       perror("source");
+      last_status = 1;
       return 1;
     }
 
@@ -461,6 +530,7 @@ int execute_builtin(char **args)
     if (args[1] == NULL)
     {
       fprintf(stderr, "export: variable name required\n");
+      last_status = 1;
       return 1;
     }
 
@@ -480,6 +550,7 @@ int execute_builtin(char **args)
         if (export_var(args[i]) != 0)
         {
           fprintf(stderr, "export: %s: undefined variable\n", args[i]);
+          last_status = 1;
         }
       }
     }
@@ -565,6 +636,7 @@ int execute_command(char **args, int arg_count, int background)
       // Non-interactive: wait for child and return immediately
       int status;
       waitpid(pid, &status, 0);
+      last_status = status ? 1 : 0;
       return 0;
     }
 
@@ -603,6 +675,7 @@ int execute_command(char **args, int arg_count, int background)
       else
       {
         // Job completed, remove from job list
+        last_status = 0;
         remove_job(job_id);
       }
     }
@@ -1355,6 +1428,25 @@ int parse_and_execute(char *input)
   if (input == NULL || strlen(input) == 0)
   {
     return 0;
+  }
+
+  // Handle && and || logical operators outside quotes
+  int is_and = 0;
+  char *op_ptr = find_logic_op(input, &is_and);
+  if (op_ptr)
+  {
+    char *right = op_ptr + 2;
+    *op_ptr = '\0';
+    char *left = trim(input);
+    right = trim(right);
+    int status_left = parse_and_execute(left);
+    int status_total = status_left;
+    if ((is_and && status_left == 0) || (!is_and && status_left != 0))
+    {
+      status_total = parse_and_execute(right);
+    }
+    last_status = status_total;
+    return status_total;
   }
 
   // Check for pipes
