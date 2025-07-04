@@ -28,7 +28,13 @@ int parse_and_execute(char *line)
   {
     *eq = '\0';
     const char *name = line;
-    const char *val = eq + 1;
+    char *val = eq + 1;
+    if (val[0] == '$')
+    {
+      const char *rep = get_var(val + 1);
+      if (rep)
+        val = (char *)rep;
+    }
     set_var(name, val);
     return 0; /* success */
   }
@@ -45,8 +51,14 @@ int main(void)
   /* Build a small script exercising if/while/for */
   const char *script =
       "X=0\n"
-      "if true; then X=1; else X=2; fi\n"
-      "for I in a b; do X=$I; done\n";
+      "if true; then\n"
+      "X=1\n"
+      "else\n"
+      "X=2\n"
+      "fi\n"
+      "for I in a b; do\n"
+      "X=$I\n"
+      "done\n";
 
   /* Use fmemopen to treat the string as a FILE* stream */
   FILE *fp = fmemopen((void *)script, strlen(script), "r");

@@ -27,6 +27,7 @@
 #include "vars.h"
 #include "shell.h"
 #include "parser.h"
+#include "tokenizer.h"
 
 #define MAX_INPUT_SIZE 1024
 #define MAX_ARGS 64
@@ -89,6 +90,17 @@ void mark_job_as_running(job_t *job);
 void continue_job(job_t *job, int foreground);
 pid_t create_process_group();
 
+// Helper: trim leading and trailing whitespace in place
+static char *trim(char *s)
+{
+  while (*s && (*s == ' ' || *s == '\t'))
+    s++;
+  char *end = s + strlen(s);
+  while (end > s && (*(end - 1) == ' ' || *(end - 1) == '\t'))
+    *(--end) = '\0';
+  return s;
+}
+
 /**
  * Main function - shell entry point
  */
@@ -125,9 +137,7 @@ int main(int argc, char *argv[])
     char *segment = strtok_r(cmd_buf, ";", &ctx);
     while (segment)
     {
-      /* Trim spaces */
-      while (*segment == ' ' || *segment == '\t')
-        segment++;
+      segment = trim(segment);
       if (*segment)
         parse_and_execute(segment);
       segment = strtok_r(NULL, ";", &ctx);
@@ -877,7 +887,7 @@ void execute_with_pipe(char *cmd1, char *cmd2)
 
     // Parse and execute the command
     int arg_count;
-    char **args = parse_input(cmd1, &arg_count);
+    char **args = split_command_line(cmd1, &arg_count);
 
     // Check for built-in commands
     if (!execute_builtin(args))
@@ -893,7 +903,7 @@ void execute_with_pipe(char *cmd1, char *cmd2)
       }
     }
 
-    free(args);
+    free_tokens(args);
     exit(EXIT_SUCCESS);
   }
 
@@ -946,7 +956,7 @@ void execute_with_pipe(char *cmd1, char *cmd2)
 
     // Parse and execute the command
     int arg_count;
-    char **args = parse_input(cmd2, &arg_count);
+    char **args = split_command_line(cmd2, &arg_count);
 
     // Check for built-in commands
     if (!execute_builtin(args))
@@ -962,7 +972,7 @@ void execute_with_pipe(char *cmd1, char *cmd2)
       }
     }
 
-    free(args);
+    free_tokens(args);
     exit(EXIT_SUCCESS);
   }
 
@@ -1384,7 +1394,7 @@ int parse_and_execute(char *input)
 
   // Parse the input into command and arguments
   int arg_count;
-  char **args = parse_input(input, &arg_count);
+  char **args = split_command_line(input, &arg_count);
 
   // Check for empty command
   if (args[0] == NULL)
@@ -1431,7 +1441,8 @@ int parse_and_execute(char *input)
   // Execute the command
   execute_command(args, arg_count, background);
 
-  free(args);
+  free_tokens(args);
+
   return 0;
 }
 
