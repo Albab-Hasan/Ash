@@ -4,9 +4,22 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <fnmatch.h>
+#include <ctype.h>
 
 // For now we implement a trivial parser that reads line by line and executes directly.
 // Proper recursive-descent parser will be filled in Phase-2 steps b-e.
+
+// Reuse trim helper locally (duplicates shell.c static function)
+static char *trim(char *s)
+{
+  while (*s && isspace((unsigned char)*s))
+    s++;
+  char *end = s + strlen(s);
+  while (end > s && isspace((unsigned char)*(end - 1)))
+    *(--end) = '\0';
+  return s;
+}
 
 static int eval_command(char *cmd)
 {
@@ -14,13 +27,33 @@ static int eval_command(char *cmd)
   return rc == 0; // success -> true
 }
 
+static int loop_control_flag = 0; /* 0=normal,1=break,2=continue */
+
+static void reset_loop_flag() { loop_control_flag = 0; }
+
+static int is_break(const char *s) { return strcmp(s, "break") == 0; }
+static int is_continue(const char *s) { return strcmp(s, "continue") == 0; }
+
 static void exec_block(char **lines, int start, int end)
 {
   char buffer[1024];
   for (int i = start; i < end; i++)
   {
-    strcpy(buffer, lines[i]);
+    char *line_trim = trim(lines[i]);
+    if (is_break(line_trim))
+    {
+      loop_control_flag = 1;
+      break;
+    }
+    if (is_continue(line_trim))
+    {
+      loop_control_flag = 2;
+      break;
+    }
+    strcpy(buffer, line_trim);
     parse_and_execute(buffer);
+    if (loop_control_flag) /* propagate flag */
+      break;
   }
 }
 
@@ -202,7 +235,12 @@ ASTNode *parse_stream(FILE *fp)
       /* 3. Execute the loop */
       while (eval_command(cond))
       {
+        reset_loop_flag();
         exec_block(lines, do_line + 1, done_line);
+        if (loop_control_flag == 1) /* break */
+          break;
+        if (loop_control_flag == 2) /* continue */
+          continue;
       }
 
       /* 4. Move index past the loop */
@@ -338,13 +376,108 @@ ASTNode *parse_stream(FILE *fp)
           }
 
           set_var(varname, item);
+          reset_loop_flag();
           exec_block(lines, do_line + 1, done_line);
-          item = strtok_r(NULL, " \t", &saveptr);
+          if (loop_control_flag == 1)
+            break; /* break loop */
+          if (loop_control_flag == 2)
+          {
+            item = strtok_r(NULL, " \t", &saveptr);
+            continue; /* continue next item */
+          }
         }
       }
 
       /* 5. Advance index */
       i = done_line + 1;
+      continue;
+    }
+    /* --------------------------------------------------------------
+     * case STATEMENT SUPPORT (simple, non-nested)
+     * Syntax (must be on separate lines):
+     *   case WORD in
+     *     PAT1) cmd1 ;;
+     *     PAT2) cmd2 ;;
+     *   esac
+     * Only first matching pattern executes. PAT supports shell glob via fnmatch().
+     * -------------------------------------------------------------- */
+    else if (strncmp(lines[i], "case ", 5) == 0)
+    {
+      char word[256] = "";
+      /* Extract WORD before 'in' */
+      char *in_ptr = strstr(lines[i] + 5, " in");
+      if (!in_ptr)
+      {
+        fprintf(stderr, "parser: malformed case header\n");
+        break;
+      }
+      size_t wlen = in_ptr - (lines[i] + 5);
+      strncpy(word, lines[i] + 5, wlen);
+      word[wlen] = '\0';
+
+      /* Locate matching esac */
+      int esac_line = -1;
+      int j = i + 1;
+      while (j < n && strcmp(lines[j], "esac") != 0)
+        j++;
+      if (j >= n)
+      {
+        fprintf(stderr, "parser: missing esac\n");
+        break;
+      }
+
+      /* Iterate over pattern lines between i+1 and j-1 */
+      int executed = 0;
+      for (int k = i + 1; k < j; k++)
+      {
+        if (executed)
+          break;
+        char *p = strchr(lines[k], ')');
+        if (!p)
+          continue; // skip malformed line
+        *p = '\0';
+        char *pattern = trim(lines[k]);
+        char *cmd = trim(p + 1);
+        /* remove optional trailing ;; */
+        size_t clen = strlen(cmd);
+        if (clen >= 2 && cmd[clen - 1] == ';' && cmd[clen - 2] == ';')
+        {
+          cmd[clen - 2] = '\0';
+        }
+
+        if (fnmatch(pattern, word, 0) == 0)
+        {
+          executed = 1;
+          parse_and_execute(cmd);
+        }
+      }
+
+      i = esac_line = j + 1;
+      continue;
+    }
+    /* Function definition: NAME() { */
+    if (strstr(lines[i], "()") && strstr(lines[i], "{") && !strchr(lines[i], ' '))
+    {
+      char fname[64];
+      sscanf(lines[i], "%63[^() ]", fname);
+      int body_start = i + 1;
+      int brace_depth = 1;
+      int j = i + 1;
+      while (j < n && brace_depth > 0)
+      {
+        if (strchr(lines[j], '{'))
+          brace_depth++;
+        if (strchr(lines[j], '}'))
+          brace_depth--;
+        j++;
+      }
+      if (brace_depth != 0)
+      {
+        fprintf(stderr, "parser: missing } in function %s\n", fname);
+        break;
+      }
+      store_function(fname, lines, body_start, j - 1);
+      i = j;
       continue;
     }
     else if (lines[i][0] == '\0')
@@ -374,4 +507,15 @@ void free_ast(ASTNode *node)
 void exec_ast(ASTNode *node)
 {
   (void)node;
+}
+
+int exec_function_if_defined(char **argv, int argc)
+{
+  if (argv == NULL || argv[0] == NULL)
+    return 0;
+  int idx = find_func(argv[0]);
+  if (idx == -1)
+    return 0;
+  execute_function(argv[0], argv, argc);
+  return 1;
 }

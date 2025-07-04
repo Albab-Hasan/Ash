@@ -1498,7 +1498,7 @@ int parse_and_execute(char *input)
   // Check for built-in commands
   if (execute_builtin(args))
   {
-    free(args);
+    free_tokens(args);
     return 0;
   }
 

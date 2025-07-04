@@ -48,6 +48,12 @@ This will compile the code and create the executable `ash`.
 ./ash
 ```
 
+### One-off command (-c)
+
+```bash
+./ash -c "export FOO=bar; env | grep FOO"
+```
+
 ### Cleaning Up
 
 ```bash
@@ -176,7 +182,15 @@ interactive and non-interactive modes.
 | If statement        | `if <cmd>; then ... [else ...] fi` | Condition succeeds if `<cmd>` exits with status 0. |
 | While loop          | `while <cmd>; do ... done` | Loop continues while condition command returns status 0. |
 | For loop            | `for VAR in a b c; do ... done` | Iterates over list, setting `$VAR` each turn. |
+| Export variable     | `export NAME[=value]` | Makes variable part of the environment for child processes. |
+| Logical operators   | `cmd1 && cmd2`, `cmd1 \|\| cmd2` | Conditionally run second command based on first's exit status. |
+| Case statement      | `case WORD in ... esac` | Shell glob patterns with `)` lines ending in `;;`. |
+| Loop control        | `break`, `continue`     | Works inside `for` and `while` loops. |
 | Source file         | `source <file>` | Executes the file in the current shell context. |
+| Quoting / escapes   | Single quotes keep literal, double quotes allow \`\\\`, `\"`; backslash escapes outside quotes. |
+| Functions           | `name() { ... }`       | Define shell functions and call them like commands. |
+
+When running a script as `./ash script.ash arg1 arg2`, positional parameters `$1`, `$2` … are automatically set.
 
 Support for `for … in … done` is planned for the next milestone.
 
@@ -200,6 +214,20 @@ fi
 
 Run it with `./ash demo.ash` or from the prompt with `source demo.ash`.
 
+### One-off commands & quoting examples
+
+```bash
+# double-quoted string is preserved
+./ash -c 'echo "hello world"'
+
+# preserve spaces in variable value
+./ash -c 'VAR="a b"; echo $VAR'
+
+# logical AND / OR
+./ash -c 'false && echo should_not_print'
+./ash -c 'false || echo fallback'
+```
+
 ## Running Unit Tests
 
 Basic unit tests for the variable store and tokenizer live under `tests/`.
@@ -209,3 +237,6 @@ make test
 ```
 
 You should see each individual test executable run and `All unit tests passed` when everything is green.
+
+### Notes
+• In the examples, text after the `#` symbol is a comment; do **not** paste the `# …` part into your terminal.
