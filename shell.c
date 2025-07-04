@@ -25,6 +25,8 @@
 #include <termios.h>   /* Terminal control */
 #include <sys/ioctl.h> /* ioctl for terminal control */
 #include "vars.h"
+#include "shell.h"
+#include "parser.h"
 
 #define MAX_INPUT_SIZE 1024
 #define MAX_ARGS 64
@@ -90,7 +92,7 @@ pid_t create_process_group();
 /**
  * Main function - shell entry point
  */
-int main()
+int main(int argc, char *argv[])
 {
   char *input;
 
@@ -103,6 +105,59 @@ int main()
     jobs[i].running = 0;
     jobs[i].foreground = 0;
     jobs[i].notified = 0;
+  }
+
+  /* Handle -c option to execute a single command and exit */
+  if (argc > 1 && strcmp(argv[1], "-c") == 0)
+  {
+    if (argc < 3)
+    {
+      fprintf(stderr, "ash: -c requires an argument\n");
+      return 1;
+    }
+
+    /* Split the command string on semicolons and run each sequentially */
+    char cmd_buf[MAX_INPUT_SIZE];
+    strncpy(cmd_buf, argv[2], sizeof(cmd_buf) - 1);
+    cmd_buf[sizeof(cmd_buf) - 1] = '\0';
+
+    char *ctx = NULL;
+    char *segment = strtok_r(cmd_buf, ";", &ctx);
+    while (segment)
+    {
+      /* Trim spaces */
+      while (*segment == ' ' || *segment == '\t')
+        segment++;
+      if (*segment)
+        parse_and_execute(segment);
+      segment = strtok_r(NULL, ";", &ctx);
+    }
+
+    return 0;
+  }
+
+  /* Non-interactive script execution: ash myscript.ash */
+  if (argc > 1)
+  {
+    FILE *fp = fopen(argv[1], "r");
+    if (!fp)
+    {
+      perror("ash");
+      return 1;
+    }
+
+    /* Set positional parameters $1 $2 ... for the script */
+    for (int i = 2; i < argc; i++)
+    {
+      char num[16];
+      snprintf(num, sizeof(num), "%d", i - 1);
+      set_var(num, argv[i]);
+    }
+
+    /* Use the parser to execute the whole script */
+    parse_stream(fp);
+    fclose(fp);
+    return 0;
   }
 
   // Initialize terminal and set up job control
@@ -376,24 +431,48 @@ int execute_builtin(char **args)
       fprintf(stderr, "source: filename required\n");
       return 1;
     }
+
     FILE *fp = fopen(args[1], "r");
     if (!fp)
     {
       perror("source");
       return 1;
     }
-    char line[MAX_INPUT_SIZE];
-    while (fgets(line, sizeof(line), fp))
-    {
-      // Remove trailing newline
-      size_t len = strlen(line);
-      if (len > 0 && line[len - 1] == '\n')
-      {
-        line[len - 1] = '\0';
-      }
-      parse_and_execute(line);
-    }
+
+    /* Reuse the same parser used for non-interactive scripts */
+    parse_stream(fp);
     fclose(fp);
+    return 1;
+  }
+
+  // export command
+  if (strcmp(args[0], "export") == 0)
+  {
+    if (args[1] == NULL)
+    {
+      fprintf(stderr, "export: variable name required\n");
+      return 1;
+    }
+
+    for (int i = 1; args[i]; i++)
+    {
+      char *eq = strchr(args[i], '=');
+      if (eq && eq != args[i])
+      {
+        *eq = '\0';
+        const char *name = args[i];
+        const char *value = eq + 1;
+        set_var(name, value);
+        setenv(name, value, 1);
+      }
+      else
+      {
+        if (export_var(args[i]) != 0)
+        {
+          fprintf(stderr, "export: %s: undefined variable\n", args[i]);
+        }
+      }
+    }
     return 1;
   }
 
@@ -470,6 +549,13 @@ int execute_command(char **args, int arg_count, int background)
       }
 
       setpgid(pid, pgid);
+    }
+    else
+    {
+      // Non-interactive: wait for child and return immediately
+      int status;
+      waitpid(pid, &status, 0);
+      return 0;
     }
 
     // Rebuild command string for job control
@@ -881,11 +967,20 @@ void execute_with_pipe(char *cmd1, char *cmd2)
   }
 
   // Parent process
-  if (shell_is_interactive)
+  if (!shell_is_interactive)
   {
-    // Make sure second child is in the pipeline's process group
-    setpgid(pid2, pgid);
+    // Non-interactive: just wait for both children
+    close(pipefd[0]);
+    close(pipefd[1]);
+    int status;
+    waitpid(pid1, &status, 0);
+    waitpid(pid2, &status, 0);
+    return;
   }
+
+  // Interactive path – job control
+  // Make sure second child is in the pipeline's process group
+  setpgid(pid2, pgid);
 
   // Add job to job list
   char pipeline_cmd[MAX_INPUT_SIZE];
