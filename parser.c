@@ -1,5 +1,6 @@
 #include "parser.h"
 #include "shell.h" // forward declaration to use parse_and_execute
+#include "vars.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -187,6 +188,137 @@ ASTNode *parse_stream(FILE *fp)
       }
 
       /* 4. Move index past the loop */
+      i = done_line + 1;
+      continue;
+    }
+    /* --------------------------------------------------------------
+     * for LOOP SUPPORT
+     * Pattern handled (simplified):
+     *   for VAR in item1 item2 item3 ; do
+     *       # body lines
+     *   done
+     *   - "in" may be on same line or on following line.
+     *   - List items are whitespace-separated words (no glob expansion here; that is
+     *     delegated to the underlying shell execution when the variable is expanded).
+     * -------------------------------------------------------------- */
+    else if (strncmp(lines[i], "for ", 4) == 0 || strcmp(lines[i], "for") == 0)
+    {
+      char varname[64] = "";
+      char itemlist[1024] = "";
+      int do_line = -1;
+
+      /* 1. Collect header lines until we hit "do" */
+      int header_end = i;
+      char header[1024] = "";
+      strcpy(header, lines[i]);
+      while (strstr(header, " do") == NULL && strcmp(lines[header_end], "do") != 0)
+      {
+        header_end++;
+        if (header_end >= n)
+          break;
+        strcat(header, " ");
+        strcat(header, lines[header_end]);
+      }
+
+      if (strstr(header, " do") == NULL && (header_end >= n || strcmp(lines[header_end], "do") != 0))
+      {
+        fprintf(stderr, "parser: malformed for-loop header (missing do)\n");
+        break;
+      }
+
+      /* If header_end line contains only "do", set do_line; else we already have do in header */
+      if (strcmp(lines[header_end], "do") == 0)
+      {
+        do_line = header_end;
+      }
+      else
+      {
+        do_line = header_end; // 'do' token was on the same line we concatenated
+      }
+
+      /* 2. Tokenise header to extract var name and list */
+      /* Expected tokens: for var in item1 item2 ... do */
+      char *tok_ctx = NULL;
+      char *tok = strtok_r(header, " \t", &tok_ctx); // "for"
+      if (!tok || strcmp(tok, "for") != 0)
+      {
+        fprintf(stderr, "parser: internal error parsing for-loop\n");
+        break;
+      }
+      tok = strtok_r(NULL, " \t", &tok_ctx); // var name
+      if (!tok)
+      {
+        fprintf(stderr, "parser: missing variable name in for-loop\n");
+        break;
+      }
+      strncpy(varname, tok, sizeof(varname) - 1);
+
+      tok = strtok_r(NULL, " \t", &tok_ctx); // expect "in"
+      if (!tok || strcmp(tok, "in") != 0)
+      {
+        fprintf(stderr, "parser: missing 'in' keyword in for-loop\n");
+        break;
+      }
+
+      /* The rest until "do" forms the item list */
+      char *rest = strtok_r(NULL, "", &tok_ctx); // get the rest of the string
+      if (rest)
+      {
+        /* Strip trailing " do" if present */
+        char *do_pos = strstr(rest, " do");
+        if (do_pos)
+        {
+          *do_pos = '\0';
+        }
+        strncpy(itemlist, rest, sizeof(itemlist) - 1);
+      }
+
+      /* 3. Find matching 'done' (handle nesting) */
+      int done_line = -1;
+      int j = do_line + 1;
+      int nested_for = 0;
+      while (j < n)
+      {
+        if (strncmp(lines[j], "for", 3) == 0)
+          nested_for++;
+        if (strcmp(lines[j], "done") == 0)
+        {
+          if (nested_for == 0)
+          {
+            done_line = j;
+            break;
+          }
+          else
+            nested_for--;
+        }
+        j++;
+      }
+
+      if (done_line == -1)
+      {
+        fprintf(stderr, "parser: missing done in for-loop\n");
+        break;
+      }
+
+      /* 4. Iterate over items */
+      if (strlen(itemlist) == 0)
+      {
+        /* If no explicit list, default to positional parameters (not supported). Skip. */
+        fprintf(stderr, "parser: empty item list in for-loop\n");
+      }
+      else
+      {
+        char *saveptr = NULL;
+        char *item = strtok_r(itemlist, " \t", &saveptr);
+        while (item)
+        {
+          set_var(varname, item);
+          exec_block(lines, do_line + 1, done_line);
+          item = strtok_r(NULL, " \t", &saveptr);
+        }
+      }
+
+      /* 5. Advance index */
       i = done_line + 1;
       continue;
     }

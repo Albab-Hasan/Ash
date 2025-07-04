@@ -175,6 +175,7 @@ interactive and non-interactive modes.
 | Variable expansion  | `$NAME`      | Happens after tokenising, before exec. Undefined vars expand to empty string. |
 | If statement        | `if <cmd>; then ... [else ...] fi` | Condition succeeds if `<cmd>` exits with status 0. |
 | While loop          | `while <cmd>; do ... done` | Loop continues while condition command returns status 0. |
+| For loop            | `for VAR in a b c; do ... done` | Iterates over list, setting `$VAR` each turn. |
 | Source file         | `source <file>` | Executes the file in the current shell context. |
 
 Support for `for … in … done` is planned for the next milestone.
