@@ -147,3 +147,54 @@ The shell implements true Unix job control with the following capabilities:
 5. **Input/Output Redirection**
    - Challenge: Parsing and handling redirection operators with proper file permission management.
    - Solution: Detected redirection symbols during command parsing and used open(), dup2() to set up file descriptors before executing commands.
+
+## Scripting Support
+
+Ash now includes a **minimal scripting language** that re-uses the same parser in both
+interactive and non-interactive modes.
+
+### How to run a script
+
+1. **Non-interactive** – execute an entire file and exit:
+
+   ```bash
+   ./ash myscript.ash
+   ```
+
+2. **Interactive** – from inside the REPL, source a file line-by-line:
+
+   ```bash
+   ash> source myscript.ash
+   ```
+
+### Currently supported scripting features
+
+| Category | Syntax | Notes |
+|----------|--------|-------|
+| Variable assignment | `NAME=value` | No whitespace around `=`. Max 64 vars kept in memory. |
+| Variable expansion  | `$NAME`      | Happens after tokenising, before exec. Undefined vars expand to empty string. |
+| If statement        | `if <cmd>; then ... [else ...] fi` | Condition succeeds if `<cmd>` exits with status 0. |
+| While loop          | `while <cmd>; do ... done` | Loop continues while condition command returns status 0. |
+| Source file         | `source <file>` | Executes the file in the current shell context. |
+
+Support for `for … in … done` is planned for the next milestone.
+
+### Example script `demo.ash`
+
+```sh
+# simple counter
+count=0
+
+while [ "$count" -lt 3 ]; do
+    echo "Loop $count"
+    count=$(expr $count + 1)
+done
+
+if ls *.c >/dev/null 2>&1; then
+    echo "Found some C files!"
+else
+    echo "No C files here."
+fi
+```
+
+Run it with `./ash demo.ash` or from the prompt with `source demo.ash`.
