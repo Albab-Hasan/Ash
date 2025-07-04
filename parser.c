@@ -37,7 +37,25 @@ ASTNode *parse_stream(FILE *fp)
     size_t len = strlen(line);
     if (len && line[len - 1] == '\n')
       line[len - 1] = '\0';
-    lines[n++] = strdup(line);
+
+    /* Split on semicolons to treat them as separate logical lines.
+       Note: This is simplistic and does not honour quoting. */
+    char *segment_ctx = NULL;
+    char *seg = strtok_r(line, ";", &segment_ctx);
+    while (seg && n < MAX_LINES)
+    {
+      /* Trim leading/trailing spaces */
+      while (*seg == ' ' || *seg == '\t')
+        seg++;
+      size_t slen = strlen(seg);
+      while (slen > 0 && (seg[slen - 1] == ' ' || seg[slen - 1] == '\t'))
+        seg[--slen] = '\0';
+
+      if (slen > 0)
+        lines[n++] = strdup(seg);
+
+      seg = strtok_r(NULL, ";", &segment_ctx);
+    }
   }
 
   int i = 0;
