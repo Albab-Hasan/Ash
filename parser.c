@@ -312,6 +312,13 @@ ASTNode *parse_stream(FILE *fp)
         char *item = strtok_r(itemlist, " \t", &saveptr);
         while (item)
         {
+          /* Remove any trailing semicolon from item token */
+          size_t ilen = strlen(item);
+          if (ilen > 0 && item[ilen - 1] == ';')
+          {
+            item[ilen - 1] = '\0';
+          }
+
           set_var(varname, item);
           exec_block(lines, do_line + 1, done_line);
           item = strtok_r(NULL, " \t", &saveptr);
