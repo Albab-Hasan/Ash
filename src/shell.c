@@ -10,6 +10,7 @@
  * - Pipes
  * - Job control
  */
+/* ash - minimal Unix-like shell */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -68,7 +69,6 @@ void put_job_in_background(job_t *job, int cont);
 void wait_for_job(job_t *job);
 void mark_job_as_running(job_t *job);
 void continue_job(job_t *job, int foreground);
-pid_t create_process_group();
 
 // Helper: trim leading and trailing whitespace in place
 static char *trim(char *s) {
@@ -358,7 +358,7 @@ int execute_command(char **args, int arg_count, int background) {
     perror("fork error");
     return -1;
   } else if (pid == 0) {
-    // We're in the child process now
+    /* child */
 
     if (shell_is_interactive) {
       // Put us in our own process group
@@ -389,7 +389,7 @@ int execute_command(char **args, int arg_count, int background) {
       exit(EXIT_FAILURE);
     }
   } else {
-    // Parent process
+    /* parent */
 
     if (shell_is_interactive) {
       // Make sure child is in its process group

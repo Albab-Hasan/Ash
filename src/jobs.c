@@ -84,8 +84,6 @@ job_t *find_job_by_pid(pid_t pid) {
   return NULL;
 }
 
-job_t *get_job_by_id(int id); /* forward declared later maybe */
-
 // Print the job list for the 'jobs' command
 void list_jobs(void) {
   for (int i = 0; i < MAX_JOBS; ++i) {

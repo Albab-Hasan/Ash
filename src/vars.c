@@ -88,7 +88,7 @@ char *capture_command_output(const char *cmd) {
   }
 
   if (pid == 0) {
-    // Child process
+    /* child */
     close(pipefd[0]);  // Close read end
 
     // Redirect stdout to pipe
@@ -111,7 +111,7 @@ char *capture_command_output(const char *cmd) {
     parse_and_execute((char *)cmd);
     exit(EXIT_SUCCESS);
   } else {
-    // Parent process
+    /* parent */
     close(pipefd[1]);  // Close write end
 
     // Read from pipe
