@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <sys/wait.h>
 #include <fcntl.h>
+#include <ctype.h>
 
 typedef struct {
   char name[MAX_VAR_NAME];
