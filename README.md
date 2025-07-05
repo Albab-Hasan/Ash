@@ -2,6 +2,8 @@
 
 This is a shell I've been building to learn more about how Unix shells work under the hood. It's inspired by bash and sh, but much simpler.
 
+Note: This is a fresh repo with a clean commit history. The project existed previously in a public repo with a messy early commit log (I was still getting comfortable with Git). This version reflects the cleaned-up and structured state of the project.
+
 ## What's in the box
 
 The shell supports basic features like:

@@ -1,0 +1,24 @@
+# Compiled binary
+ash
+
+# Object files
+*.o
+
+# Editor / OS files
+.DS_Store
+Thumbs.db
+
+# Debug / core dumps
+core*
+*.core
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.swp
+*~
+
+# Build directories
+build/
