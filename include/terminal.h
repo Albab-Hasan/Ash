@@ -4,16 +4,16 @@
 #include <termios.h>
 #include <unistd.h>
 
-/* Exposed terminal/job-control globals */
-extern pid_t shell_pgid;            /* shell's process-group id */
-extern int shell_terminal;          /* controlling tty fd (usually STDIN_FILENO) */
-extern struct termios shell_tmodes; /* saved tty modes */
-extern int shell_is_interactive;    /* boolean */
+// Terminal control globals
+extern pid_t shell_pgid;             // Our process group ID
+extern int shell_terminal;           // Terminal file descriptor
+extern struct termios shell_tmodes;  // Our terminal settings
+extern int shell_is_interactive;     // Are we in interactive mode?
 
-/* Initialises interactive mode (process group, tty, ignores) */
+// Initialize terminal for interactive use
 void terminal_init(void);
 
-/* Install SIGINT / SIGTSTP handlers suitable for readline */
+// Set up signal handlers for Ctrl+C, Ctrl+Z, etc.
 void terminal_install_signal_handlers(void);
 
 #endif

@@ -5,74 +5,68 @@
 #include <unistd.h>
 #include <errno.h>
 
-/* ------------------------------------------------------------------------- */
-/*  Globals (definitions)                                                     */
-/* ------------------------------------------------------------------------- */
-
+// Terminal control globals
 pid_t shell_pgid = 0;
 int shell_terminal = 0;
 struct termios shell_tmodes;
 int shell_is_interactive = 0;
 
-/* ------------------------------------------------------------------------- */
-static void handle_sigint(int sig)
-{
-  (void)sig;
-  /* Print newline then let readline redisplay prompt cleanly */
+// Handle Ctrl+C by showing a new prompt
+static void handle_sigint(int sig) {
+  (void)sig;  // Unused
+
+  // Print a newline and redisplay prompt
   printf("\n");
   rl_on_new_line();
   rl_redisplay();
 }
 
-static void handle_sigtstp(int sig)
-{
-  (void)sig;
+// Handle Ctrl+Z similarly
+static void handle_sigtstp(int sig) {
+  (void)sig;  // Unused
+
   printf("\n");
   rl_on_new_line();
   rl_redisplay();
 }
 
-/* ------------------------------------------------------------------------- */
-void terminal_install_signal_handlers(void)
-{
-  signal(SIGINT, handle_sigint);
-  signal(SIGTSTP, handle_sigtstp);
+// Set up our signal handlers for interactive use
+void terminal_install_signal_handlers(void) {
+  signal(SIGINT, handle_sigint);    // Ctrl+C
+  signal(SIGTSTP, handle_sigtstp);  // Ctrl+Z
 }
 
-/* ------------------------------------------------------------------------- */
-void terminal_init(void)
-{
-  /* Determine if we are running interactively */
+// Initialize terminal for interactive use
+void terminal_init(void) {
+  // Check if we're connected to a terminal
   shell_terminal = STDIN_FILENO;
   shell_is_interactive = isatty(shell_terminal);
 
-  if (!shell_is_interactive)
-    return;
+  if (!shell_is_interactive) return;
 
-  /* Loop until we are in the foreground */
-  while (tcgetpgrp(shell_terminal) != (shell_pgid = getpgrp()))
-  {
+  // Make sure we're in the foreground
+  while (tcgetpgrp(shell_terminal) != (shell_pgid = getpgrp())) {
+    // If not, wait until we are
     kill(-shell_pgid, SIGTTIN);
   }
 
-  /* Ignore signals that interactive shells usually ignore */
-  signal(SIGINT, SIG_IGN);  /* Ctrl-C */
-  signal(SIGQUIT, SIG_IGN); /* Ctrl-\ */
-  signal(SIGTSTP, SIG_IGN); /* Ctrl-Z */
-  signal(SIGTTIN, SIG_IGN);
-  signal(SIGTTOU, SIG_IGN);
+  // Ignore job control signals for now
+  signal(SIGINT, SIG_IGN);   // Ctrl+C
+  signal(SIGQUIT, SIG_IGN);  // Ctrl+\
+  signal(SIGTSTP, SIG_IGN); // Ctrl+Z
+  signal(SIGTTIN, SIG_IGN);  // Terminal read from bg
+  signal(SIGTTOU, SIG_IGN);  // Terminal write from bg
 
-  /* Put ourselves in our own process group */
+  // Create our own process group
   shell_pgid = getpid();
-  if (setpgid(shell_pgid, shell_pgid) < 0)
-  {
+  if (setpgid(shell_pgid, shell_pgid) < 0) {
     perror("ash: couldn't put the shell in its own process group");
     _exit(1);
   }
 
-  /* Grab control of the terminal */
+  // Take control of the terminal
   tcsetpgrp(shell_terminal, shell_pgid);
 
-  /* Save default terminal attributes */
+  // Save our terminal settings
   tcgetattr(shell_terminal, &shell_tmodes);
 }
