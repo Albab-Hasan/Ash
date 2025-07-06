@@ -22,3 +22,6 @@ core*
 
 # Build directories
 build/
+
+# Compiled test binaries
+tests/test_*
