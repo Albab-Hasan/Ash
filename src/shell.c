@@ -806,6 +806,173 @@ char **command_completion(const char *text, int start, int end) {
   return rl_completion_matches(text, command_generator);
 }
 
+// *** NEW: helper to split a command line into pipeline segments while respecting quotes ***
+static int split_pipeline(char *input, char **segments, int max_segments) {
+  enum { NORM, SQ, DQ } st = NORM;
+  char *start = input;
+  int count = 0;
+  for (char *p = input; *p; p++) {
+    if (st == NORM) {
+      if (*p == '\\' && *(p + 1)) {
+        p++;  // skip escaped char
+        continue;
+      }
+      if (*p == '\'') {
+        st = SQ;
+      } else if (*p == '"') {
+        st = DQ;
+      } else if (*p == '|' && *(p + 1) != '|') {
+        *p = '\0';
+        if (count < max_segments) segments[count++] = trim(start);
+        start = p + 1;
+      }
+    } else if (st == SQ) {
+      if (*p == '\'') st = NORM;
+    } else if (st == DQ) {
+      if (*p == '"')
+        st = NORM;
+      else if (*p == '\\' && *(p + 1))
+        p++;  // skip escaped char
+    }
+  }
+  if (count < max_segments) segments[count++] = trim(start);
+  return count;
+}
+
+// *** NEW: Execute an N-stage pipeline (segments[0..n-1]) ***
+static void execute_pipeline(char **segments, int n, int background) {
+  if (n <= 1) return;  // should not happen
+
+  int pipefds[32][2];  // supports up to 33 cmds which is fine for now
+  if (n - 1 > 32) {
+    fprintf(stderr, "ash: too many pipeline stages\n");
+    return;
+  }
+
+  // create required pipes beforehand
+  for (int i = 0; i < n - 1; i++) {
+    if (pipe(pipefds[i]) == -1) {
+      perror("pipe");
+      // close previously created pipes
+      for (int k = 0; k < i; k++) {
+        close(pipefds[k][0]);
+        close(pipefds[k][1]);
+      }
+      return;
+    }
+  }
+
+  pid_t pgid = 0;
+  pid_t first_pid = 0;
+
+  for (int i = 0; i < n; i++) {
+    pid_t pid = fork();
+    if (pid == -1) {
+      perror("fork");
+      // TODO: we could clean up children here but for simplicity just bail
+      return;
+    }
+
+    if (pid == 0) {
+      // Child process
+      if (shell_is_interactive) {
+        pid_t child_pid = getpid();
+        if (pgid == 0)
+          pgid = child_pid;  // the very first child sets pgid but parent hasn't updated yet
+        // place ourselves into pgid (may already be set for later children)
+        setpgid(child_pid, pgid);
+        if (!background) {
+          // Foreground: first child (or all) grabs terminal
+          tcsetpgrp(shell_terminal, pgid);
+        }
+        // reset default signals
+        signal(SIGINT, SIG_DFL);
+        signal(SIGQUIT, SIG_DFL);
+        signal(SIGTSTP, SIG_DFL);
+        signal(SIGTTIN, SIG_DFL);
+        signal(SIGTTOU, SIG_DFL);
+      }
+
+      // Set up stdin/stdout depending on our position in pipeline
+      if (i > 0) {
+        // not first: connect stdin to previous pipe read end
+        dup2(pipefds[i - 1][0], STDIN_FILENO);
+      }
+      if (i < n - 1) {
+        // not last: connect stdout to current pipe write end
+        dup2(pipefds[i][1], STDOUT_FILENO);
+      }
+
+      // Close all pipe fds in child (not needed anymore after dup)
+      for (int k = 0; k < n - 1; k++) {
+        close(pipefds[k][0]);
+        close(pipefds[k][1]);
+      }
+
+      // Parse segment into argv
+      int arg_count = 0;
+      char **args = split_command_line(segments[i], &arg_count);
+
+      // Built-in support inside pipeline (run in subshell)
+      if (!execute_builtin(args)) {
+        handle_redirection(args, &arg_count);
+        execvp(args[0], args);
+        perror("exec");
+      }
+      free_tokens(args);
+      _exit(EXIT_SUCCESS);
+    }
+
+    // Parent
+    if (pgid == 0) {
+      pgid = pid;  // first child sets the pgid for the pipeline
+      first_pid = pid;
+    }
+    // ensure each child joins same pgid
+    setpgid(pid, pgid);
+  }
+
+  // Parent: close all pipe fds
+  for (int i = 0; i < n - 1; i++) {
+    close(pipefds[i][0]);
+    close(pipefds[i][1]);
+  }
+
+  // Now handle job control / waiting similar to execute_with_pipe()
+  if (!shell_is_interactive) {
+    // just wait synchronously for all children
+    int status;
+    for (int i = 0; i < n; i++) {
+      waitpid(-pgid, &status, 0);
+    }
+    return;
+  }
+
+  // Build combined command string
+  char pipeline_cmd[MAX_INPUT_SIZE] = "";
+  for (int i = 0; i < n; i++) {
+    strcat(pipeline_cmd, segments[i]);
+    if (i < n - 1) strcat(pipeline_cmd, " | ");
+  }
+
+  int job_id = add_job(first_pid, pgid, pipeline_cmd, background);
+  job_t *job = &jobs[job_id - 1];
+
+  if (background) {
+    printf("[%d] %d\n", job_id, first_pid);
+    put_job_in_background(job, 0);
+    return;
+  }
+
+  // Foreground: give terminal to pipeline and wait
+  put_job_in_foreground(job, 0);
+  if (!job->running) {
+    printf("\n[%d] Stopped: %s\n", job_id, job->command);
+  } else {
+    remove_job(job_id);
+  }
+}
+
 /**
  * Parse input and run the command
  */
@@ -813,105 +980,83 @@ int parse_and_execute(char *input) {
   // Nothing to do for empty input
   if (input == NULL || strlen(input) == 0) return 0;
 
-  // Look for && and || operators
+  // Trim whitespace at both ends early
+  input = trim(input);
+
+  // Logical operators (&&, ||) handled first
   int is_and = 0;
   char *op_ptr = find_logic_op(input, &is_and);
   if (op_ptr) {
-    // Split at the operator
     char *right = op_ptr + 2;
     *op_ptr = '\0';
     char *left = trim(input);
     right = trim(right);
-
-    // Run the left command first
     int status_left = parse_and_execute(left);
     int status_total = status_left;
-
-    // Run right command only if condition is met:
-    // - For &&: only if left succeeded
-    // - For ||: only if left failed
     if ((is_and && status_left == 0) || (!is_and && status_left != 0))
       status_total = parse_and_execute(right);
-
     last_status = status_total;
     return status_total;
   }
 
-  // Check for pipes
-  char *pipe_token = strchr(input, '|');
-  if (pipe_token != NULL) {
-    // Split the command at the pipe
-    *pipe_token = '\0';
-    char *cmd1 = input;
-    char *cmd2 = pipe_token + 1;
-
-    // Clean up whitespace
-    while (*cmd2 == ' ' || *cmd2 == '\t') cmd2++;
-
-    execute_with_pipe(cmd1, cmd2);
-    return 0;
-  }
-
-  // Check for background execution
+  // Background (&) detection (needs quoting awareness but keep simple)
   int background = 0;
-  int len = strlen(input);
-  if (len > 0 && input[len - 1] == '&') {
-    background = 1;
-    input[len - 1] = '\0';  // Remove the & character
-
-    // Clean up trailing spaces
-    len = strlen(input);
+  size_t len = strlen(input);
+  if (len > 0) {
+    // strip trailing spaces
     while (len > 0 && (input[len - 1] == ' ' || input[len - 1] == '\t')) {
-      input[len - 1] = '\0';
-      len--;
+      input[--len] = '\0';
+    }
+    if (len > 0 && input[len - 1] == '&') {
+      background = 1;
+      input[--len] = '\0';
+      // remove any trailing spaces again
+      while (len > 0 && (input[len - 1] == ' ' || input[len - 1] == '\t')) {
+        input[--len] = '\0';
+      }
     }
   }
 
-  // Parse into command and arguments
-  int arg_count;
-  char **args = split_command_line(input, &arg_count);
-
-  // Empty command?
-  if (args[0] == NULL) {
-    free(args);
+  // Split pipelines
+  char *segments[64];
+  int seg_count = split_pipeline(input, segments, 64);
+  if (seg_count > 1) {
+    execute_pipeline(segments, seg_count, background);
     return 0;
   }
 
-  // Try built-in commands first
+  // No pipeline – fall back to single command execution
+  // Parse into argv
+  int arg_count;
+  char **args = split_command_line(segments[0], &arg_count);
+  if (args[0] == NULL) {
+    free_tokens(args);
+    return 0;
+  }
   if (execute_builtin(args)) {
     free_tokens(args);
     return 0;
   }
-
-  // Check for variable assignments (like VAR=value)
+  // Variable assignment detection
   int all_assignments = 1;
   for (int i = 0; i < arg_count; i++) {
     char *eq = strchr(args[i], '=');
-    if (eq == NULL || eq == args[i]) {
+    if (!(eq && eq != args[i])) {
       all_assignments = 0;
       break;
     }
   }
-
   if (all_assignments) {
-    // Handle all assignments
     for (int i = 0; i < arg_count; i++) {
       char *eq = strchr(args[i], '=');
       *eq = '\0';
-      const char *name = args[i];
-      const char *value = eq + 1;
-      set_var(name, value);
+      set_var(args[i], eq + 1);
     }
-    free(args);
+    free_tokens(args);
     return 0;
   }
-
-  // Expand variables like $HOME
   expand_vars(args, arg_count);
-
-  // Run the command
   execute_command(args, arg_count, background);
-
   free_tokens(args);
   return 0;
 }
