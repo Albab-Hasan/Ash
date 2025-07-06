@@ -2,9 +2,9 @@
 
 This is a shell I've been building to learn more about how Unix shells work under the hood. It's inspired by bash and sh, but much simpler.
 
-Note: I know the commit history is all over the place, and I'm really sorry about that. This project came together over a long period of time, mostly as a side project, and I didn’t even start using Git until I was already pretty far into it. I’m still not very experienced with Git (as you can probably tell from my profile), and I used to forget to commit changes regularly.
+Note: I know the commit history is all over the place, and I'm really sorry about that. This project came together over a long period of time, mostly as a side project, and I didn't even start using Git until I was already pretty far into it. I'm still not very experienced with Git (as you can probably tell from my profile), and I used to forget to commit changes regularly.
 
-A lot of the early commits are messy — sometimes I’d fix multiple things but only mention one in the message, or I’d just write something vague or unhelpful. It’s definitely not ideal, and I get that it might be frustrating to go through.
+A lot of the early commits are messy — sometimes I'd fix multiple things but only mention one in the message, or I'd just write something vague or unhelpful. It's definitely not ideal, and I get that it might be frustrating to go through.
 
 That said, things improve later on. Around commit #18 I cleaned up the project structure, and by commit #21 I started being more consistent with commits and writing proper messages.
 
@@ -126,6 +126,15 @@ ash> echo "Files: `ls | wc -l`"
 ash> echo "The date is $(echo `date`)"
 ```
 
+### Pipelines and Redirection
+
+```bash
+# Multi-stage pipeline (any length)
+ash> ls -1 | grep .c | sort | uniq -c | sort -nr
+```
+
+You can now chain as many commands as you like – every process in the pipeline shares the same process group so foreground signals (Ctrl-C / Ctrl-Z) work just like in bash.
+
 ### Scripting
 
 I've added basic scripting support. Here's a simple example:
@@ -160,7 +169,6 @@ The trickiest part was getting job control working right - making sure backgroun
 ## What's Next
 
 I'm still working on:
-- Better support for multi-stage pipelines
 - Wildcard expansion
 - Heredocs (`<<EOF`)
 - Aliases
