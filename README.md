@@ -6,7 +6,7 @@ Note: I know the commit history is all over the place, and I'm really sorry abou
 
 That said, things improve later on. Around commit #18 I cleaned up the project structure, and by commit #21 I started being more consistent with commits and writing proper messages.
 
-Thanks for understanding, and again, sorry if the earlier commits are a pain to navigate.
+Thanks for understanding.
 
 ## What's in the box
 
