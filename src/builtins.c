@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include "alias.h"
 
 extern int last_status;
 
@@ -80,6 +81,67 @@ int handle_simple_builtin(char **args) {
       res = eval_arith(args[i], &ok);
     }
     last_status = (res == 0);
+    return 1;
+  }
+
+  // alias
+  if (strcmp(args[0], "alias") == 0) {
+    if (!args[1]) {
+      list_aliases();
+      last_status = 0;
+      return 1;
+    }
+    for (int i = 1; args[i]; i++) {
+      char *eq = strchr(args[i], '=');
+      if (eq) {
+        *eq = '\0';
+        char *val = eq + 1;
+
+        /* If nothing after '=', treat following tokens as value */
+        if (*val == '\0') {
+          /* Concatenate remaining args into a single string */
+          size_t buflen = 0;
+          for (int j = i + 1; args[j]; j++) buflen += strlen(args[j]) + 1;
+          char *tmp = malloc(buflen + 1);
+          tmp[0] = '\0';
+          for (int j = i + 1; args[j]; j++) {
+            strcat(tmp, args[j]);
+            if (args[j + 1]) strcat(tmp, " ");
+          }
+          val = tmp;
+        }
+
+        /* Strip surrounding quotes if present */
+        size_t len = strlen(val);
+        if (len >= 2 &&
+            ((val[0] == '"' && val[len - 1] == '"') || (val[0] == '\'' && val[len - 1] == '\''))) {
+          val[len - 1] = '\0';
+          val++;
+        }
+
+        set_alias(args[i], val);
+        if (*(eq + 1) == '\0') {
+          free(val);
+          break; /* we consumed rest */
+        }
+      } else {
+        const char *v = get_alias(args[i]);
+        if (v) printf("alias %s='%s'\n", args[i], v);
+      }
+    }
+    last_status = 0;
+    return 1;
+  }
+
+  // unalias
+  if (strcmp(args[0], "unalias") == 0) {
+    if (!args[1]) {
+      fprintf(stderr, "unalias: name required\n");
+      last_status = 1;
+      return 1;
+    }
+    for (int i = 1; args[i]; i++) unset_alias(args[i]);
+    last_status = 0;
     return 1;
   }
 

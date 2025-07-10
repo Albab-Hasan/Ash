@@ -26,7 +26,8 @@ TESTS := \
   tests/test_parser \
   tests/test_tokenizer_quotes \
   tests/test_case \
-  tests/test_glob
+  tests/test_glob \
+  tests/test_alias
 
 tests/test_vars: tests/test_vars.c src/vars.c
 	$(CC) $(CFLAGS) $^ src/arith.c -o $@
@@ -44,6 +45,9 @@ tests/test_case: tests/test_case.c src/parser.c src/tokenizer.c src/vars.c src/a
 	$(CC) $(CFLAGS) $^ -o $@
 
 tests/test_glob: tests/test_glob.c src/globbing.c src/tokenizer.c
+	$(CC) $(CFLAGS) $^ -o $@
+
+tests/test_alias: tests/test_alias.c src/alias.c src/tokenizer.c
 	$(CC) $(CFLAGS) $^ -o $@
 
 test: $(TESTS)

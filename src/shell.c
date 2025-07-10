@@ -37,6 +37,7 @@
 #include "terminal.h"
 #include "io.h"
 #include "globbing.h"
+#include "alias.h"
 
 #define MAX_INPUT_SIZE 1024
 #define MAX_ARGS 64
@@ -591,8 +592,12 @@ void execute_with_pipe(char *cmd1, char *cmd2) {
     // Parse and run the command
     int arg_count;
     char **args = split_command_line(cmd1, &arg_count);
-
-    // Try built-ins first
+    expand_aliases(&args, &arg_count);
+    if (execute_builtin(args)) {
+      free_tokens(args);
+      exit(EXIT_SUCCESS);
+    }
+    // Try external command
     if (!execute_builtin(args)) {
       // Handle any redirections (except stdout which goes to pipe)
       handle_redirection(args, &arg_count);
@@ -649,8 +654,11 @@ void execute_with_pipe(char *cmd1, char *cmd2) {
     // Parse and run the command
     int arg_count;
     char **args = split_command_line(cmd2, &arg_count);
-
-    // Try built-ins first
+    expand_aliases(&args, &arg_count);
+    if (execute_builtin(args)) {
+      free_tokens(args);
+      exit(EXIT_SUCCESS);
+    }
     if (!execute_builtin(args)) {
       // Handle any redirections
       handle_redirection(args, &arg_count);
@@ -913,8 +921,14 @@ static void execute_pipeline(char **segments, int n, int background) {
       // Parse segment into argv
       int arg_count = 0;
       char **args = split_command_line(segments[i], &arg_count);
+      expand_aliases(&args, &arg_count);
 
       // Built-in support inside pipeline (run in subshell)
+      if (execute_builtin(args)) {
+        free_tokens(args);
+        _exit(EXIT_SUCCESS);
+      }
+      // Not a builtin -> external command
       if (!execute_builtin(args)) {
         handle_redirection(args, &arg_count);
         execvp(args[0], args);
@@ -1034,11 +1048,12 @@ int parse_and_execute(char *input) {
     free_tokens(args);
     return 0;
   }
+  expand_aliases(&args, &arg_count);
   if (execute_builtin(args)) {
     free_tokens(args);
     return 0;
   }
-  // Variable assignment detection
+  // Variable assignment detection must come after alias expansion
   int all_assignments = 1;
   for (int i = 0; i < arg_count; i++) {
     char *eq = strchr(args[i], '=');

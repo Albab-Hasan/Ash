@@ -12,13 +12,15 @@ Thanks for understanding.
 
 The shell supports basic features like:
 - Running commands with arguments
-- Built-ins like `cd`, `exit`, `history`
+- Built-ins like `cd`, `exit`, `history`, `alias` / `unalias`
 - Background processes with `&`
 - I/O redirection (`>`, `>>`, `<`)
 - Pipes (`|`)
 - Job control (Ctrl+Z, `jobs`, `fg`)
 - Command history and tab completion
 - Command substitution (`$(command)` and backtick syntax)
+- **Wildcard / glob expansion** (`*.c`, `file?.txt`, `[abc]*`)
+- **Command aliases** (`alias ll='ls -la'`)
 
 ## Project Structure
 
@@ -167,9 +169,7 @@ The trickiest part was getting job control working right - making sure backgroun
 ## What's Next
 
 I'm still working on:
-- Wildcard expansion
 - Heredocs (`<<EOF`)
-- Aliases
 
 ## Building & Testing
 
