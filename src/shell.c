@@ -36,6 +36,7 @@
 #include "jobs.h"
 #include "terminal.h"
 #include "io.h"
+#include "globbing.h"
 
 #define MAX_INPUT_SIZE 1024
 #define MAX_ARGS 64
@@ -1056,6 +1057,7 @@ int parse_and_execute(char *input) {
     return 0;
   }
   expand_vars(args, arg_count);
+  expand_globs(&args, &arg_count);
   execute_command(args, arg_count, background);
   free_tokens(args);
   return 0;

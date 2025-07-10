@@ -9,6 +9,12 @@
 #include <fcntl.h>
 #include <ctype.h>
 
+/* Weak stub for unit tests (overridden by real implementation in shell.c) */
+__attribute__((weak)) int parse_and_execute(char *input) {
+  (void)input;
+  return 0;
+}
+
 typedef struct {
   char name[MAX_VAR_NAME];
   char value[MAX_VAR_VALUE];
