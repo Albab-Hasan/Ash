@@ -6,6 +6,9 @@
 #include <stdio.h>
 #include <fnmatch.h>
 #include <ctype.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/stat.h>
 
 // For now we implement a trivial parser that reads line by line and executes directly.
 // Basic recursive-descent parser (can be extended further).
@@ -114,6 +117,55 @@ static int execute_function(const char *name, char **argv, int argc) {
   reset_loop_flag();
   exec_block(funcs[idx].body, 0, funcs[idx].line_count);
   return 0;
+}
+
+// helper to process heredoc; returns 1 if modified and consumed extra lines
+static int process_heredoc(char **lines, int *n, int *idx) {
+  char *line = lines[*idx];
+  char *p = strstr(line, "<<");
+  if (!p) return 0;
+  // ensure it's not within quotes (simplistic)
+  if (p != line && (*(p - 1) == '"' || *(p - 1) == '\'')) return 0;
+  p += 2;
+  while (*p == ' ' || *p == '\t') p++;
+  if (*p == '\0') return 0;
+  char delim[64];
+  sscanf(p, "%63s", delim);
+  // collect heredoc lines until delimiter
+  int j = *idx + 1;
+  int start = j;
+  while (j < *n && strcmp(lines[j], delim) != 0) j++;
+  if (j >= *n) {
+    fprintf(stderr, "parser: heredoc delimiter %s not found\n", delim);
+    return 0;
+  }
+  // write content to temp file
+  char tmpl[] = "/tmp/ash_hdXXXXXX";
+  int fd = mkstemp(tmpl);
+  if (fd == -1) {
+    perror("mkstemp");
+    return 0;
+  }
+  for (int k = start; k < j; k++) {
+    write(fd, lines[k], strlen(lines[k]));
+    write(fd, "\n", 1);
+  }
+  close(fd);
+  // build new command replacing <<delim with < tempfile
+  char newcmd[1024];
+  size_t prefix_len = strstr(line, "<<") - line;
+  strncpy(newcmd, line, prefix_len);
+  newcmd[prefix_len] = '\0';
+  strcat(newcmd, "< ");
+  strcat(newcmd, tmpl);
+  lines[*idx] = strdup(newcmd);
+  // free consumed lines
+  for (int k = *idx + 1; k <= j; k++) free(lines[k]);
+  // shift remaining lines up
+  int shift = j - (*idx);
+  for (int k = j + 1; k < *n; k++) lines[k - shift] = lines[k];
+  *n -= shift;
+  return 1;
 }
 
 ASTNode *parse_stream(FILE *fp) {
@@ -467,6 +519,10 @@ ASTNode *parse_stream(FILE *fp) {
       i++;
       continue;
     } else {
+      /* heredoc preprocessing */
+      if (process_heredoc(lines, &n, &i)) {
+        /* lines array compacted, stay on same index to handle nested */
+      }
       char buf[1024];
       strcpy(buf, lines[i]);
       parse_and_execute(buf);
