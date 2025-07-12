@@ -184,7 +184,7 @@ The trickiest part was getting job control working right - making sure backgroun
 ## What's Next
 
 I'm still working on:
-- Heredocs (`<<EOF`)
+- nothing
 
 ## Building & Testing
 
