@@ -2,6 +2,8 @@
 
 This is a shell I've been building to learn more about how Unix shells work under the hood. It's inspired by bash and sh, but much simpler.
 
+But now honestly calling this a learning project would be an understatement. I kinda amazed by how far I came building this. From trying to learn how to build a shell that supports basic commands like `cd` and `ls` to implementing globbing with wildcard support and Arbitrary Length Pipelines; with Job Control being hardest part. This has been a really fun journey and I'll continue building this project, hopefully one day making a 'Fish' equivelent.
+
 Note: I know the commit history is all over the place, and I'm really sorry about that.
 
 That said, things improve later on. Around commit #18 I cleaned up the project structure, and by commit #21 I started being more consistent with commits and writing proper messages.
