@@ -19,7 +19,9 @@ The shell supports basic features like:
 - I/O redirection (`>`, `>>`, `<`)
 - Pipes (`|`)
 - Job control (Ctrl+Z, `jobs`, `fg`)
-- Command history and tab completion
+- Command history
+- **Context-aware tab completion** (commands, files, variables)
+- **Syntax highlighting in completion menu**
 - Command substitution (`$(command)` and backtick syntax)
 - **Wildcard / glob expansion** (`*.c`, `file?.txt`, `[abc]*`)
 - **Command aliases** (`alias ll='ls -la'`)
@@ -156,6 +158,17 @@ else
     echo "No C files here."
 fi
 ```
+
+### Auto-Completion
+
+- Tab-completion for commands, files, directories, and variables.
+- Context-aware: first word completes commands, later words complete files/dirs, `$` triggers variable completion.
+- Completion menu is colorized for easy visual parsing.
+
+### Syntax Highlighting
+
+- Completion menu highlights commands (green), operators (yellow), variables (cyan), strings (magenta), comments (gray), and arguments (white).
+- Makes it easier to distinguish between different shell elements at a glance.
 
 ## Challenges I Faced
 

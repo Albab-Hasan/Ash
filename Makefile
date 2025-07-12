@@ -28,7 +28,9 @@ TESTS := \
   tests/test_case \
   tests/test_glob \
   tests/test_alias \
-  tests/test_heredoc
+  tests/test_heredoc \
+  tests/test_completion \
+  tests/test_syntax
 
 tests/test_vars: tests/test_vars.c src/vars.c
 	$(CC) $(CFLAGS) $^ src/arith.c -o $@
@@ -53,6 +55,12 @@ tests/test_alias: tests/test_alias.c src/alias.c src/tokenizer.c
 
 tests/test_heredoc: tests/test_heredoc.c ash
 	$(CC) $(CFLAGS) $< -o $@
+
+tests/test_completion: tests/test_completion.c src/completion.c
+	$(CC) $(CFLAGS) $^ -o $@
+
+tests/test_syntax: tests/test_syntax.c src/syntax.c
+	$(CC) $(CFLAGS) $^ -o $@
 
 test: $(TESTS)
 	@for t in $(TESTS); do \

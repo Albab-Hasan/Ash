@@ -38,6 +38,8 @@
 #include "io.h"
 #include "globbing.h"
 #include "alias.h"
+#include "completion.h"
+#include "syntax.h"
 
 #define MAX_INPUT_SIZE 1024
 #define MAX_ARGS 64
@@ -59,6 +61,7 @@ void show_history();
 void check_background_jobs();
 int parse_and_execute(char *input);
 void execute_with_pipe(char *cmd1, char *cmd2);
+void display_with_highlight(char **matches, int num_matches, int max_length);
 /* redirection helpers in io.h */
 void initialize_readline();
 char *command_generator(const char *text, int state);
@@ -714,12 +717,11 @@ void execute_with_pipe(char *cmd1, char *cmd2) {
  * Set up readline with our preferences
  */
 void initialize_readline() {
-  // Use our custom tab completion
-  rl_attempted_completion_function = command_completion;
-  rl_completion_entry_function = command_generator;
+  // Use enhanced completion
+  rl_attempted_completion_function = enhanced_completion;
 
-  // Show completions in a nice vertical list
-  rl_completion_display_matches_hook = rl_display_match_list;
+  // Use custom display with syntax highlighting
+  rl_completion_display_matches_hook = display_with_highlight;
 
   // Tab key shows completion options
   rl_bind_key('\t', rl_complete);
@@ -1076,4 +1078,53 @@ int parse_and_execute(char *input) {
   execute_command(args, arg_count, background);
   free_tokens(args);
   return 0;
+}
+
+/* Custom display function with syntax highlighting */
+void display_with_highlight(char **matches, int num_matches, int max_length) {
+  if (num_matches <= 0) return;
+
+  /* Calculate display width */
+  int cols = 80 / (max_length + 2);
+  if (cols < 1) cols = 1;
+
+  int rows = (num_matches + cols - 1) / cols;
+
+  for (int i = 0; i < rows; i++) {
+    for (int j = 0; j < cols; j++) {
+      int idx = j * rows + i;
+      if (idx < num_matches) {
+        /* Highlight the match */
+        highlight_entry_t *entries;
+        int entry_count;
+        entries = highlight_line(matches[idx], &entry_count);
+
+        if (entries) {
+          int pos = 0;
+          for (int k = 0; k < entry_count; k++) {
+            /* Print text before highlight */
+            if (entries[k].start > pos) {
+              printf("%.*s", entries[k].start - pos, matches[idx] + pos);
+            }
+            /* Print highlighted text */
+            printf("%s%.*s\033[0m", get_token_color(entries[k].type),
+                   entries[k].end - entries[k].start, matches[idx] + entries[k].start);
+            pos = entries[k].end;
+          }
+          /* Print remaining text */
+          if (pos < strlen(matches[idx])) {
+            printf("%s", matches[idx] + pos);
+          }
+          free_highlights(entries);
+        } else {
+          printf("%s", matches[idx]);
+        }
+
+        /* Padding */
+        int padding = max_length - strlen(matches[idx]) + 2;
+        printf("%*s", padding, "");
+      }
+    }
+    printf("\n");
+  }
 }
