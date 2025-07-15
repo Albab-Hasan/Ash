@@ -159,17 +159,6 @@ else
 fi
 ```
 
-### Auto-Completion
-
-- Tab-completion for commands, files, directories, and variables.
-- Context-aware: first word completes commands, later words complete files/dirs, `$` triggers variable completion.
-- Completion menu is colorized for easy visual parsing.
-
-### Syntax Highlighting
-
-- Completion menu highlights commands (green), operators (yellow), variables (cyan), strings (magenta), comments (gray), and arguments (white).
-- Makes it easier to distinguish between different shell elements at a glance.
-
 ## Challenges I Faced
 
 Building this shell taught me a lot about:
