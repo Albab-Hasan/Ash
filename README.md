@@ -20,8 +20,6 @@ The shell supports basic features like:
 - Pipes (`|`)
 - Job control (Ctrl+Z, `jobs`, `fg`)
 - Command history
-- **Context-aware tab completion** (commands, files, variables)
-- **Syntax highlighting in completion menu**
 - Command substitution (`$(command)` and backtick syntax)
 - **Wildcard / glob expansion** (`*.c`, `file?.txt`, `[abc]*`)
 - **Command aliases** (`alias ll='ls -la'`)
