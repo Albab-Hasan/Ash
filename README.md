@@ -1,93 +1,78 @@
-# ASH - My Unix-like Shell Project
+# ASH - Unix Shell
 
-This is a shell I've been building to learn more about how Unix shells work under the hood. It's inspired by bash and sh, but much simpler.
+A Unix shell implementation inspired by bash and sh, built to understand how shells work internally.
 
-But now honestly calling this a learning project would be an understatement. I kinda amazed by how far I came building this. From trying to learn how to build a shell that supports basic commands like `cd` and `ls` to implementing globbing with wildcard support and Arbitrary Length Pipelines; with Job Control being hardest part. This has been a really fun journey and I'll continue building this project, hopefully one day making a 'Fish' equivelent.
+## Features
 
-Note: I know the commit history is all over the place, and I'm really sorry about that.
-
-That said, things improve later on. Around commit #18 I cleaned up the project structure, and by commit #21 I started being more consistent with commits and writing proper messages.
-
-Thanks for understanding.
-
-## What's in the box
-
-The shell supports basic features like:
-- Running commands with arguments
-- Built-ins like `cd`, `exit`, `history`, `alias` / `unalias`
+- Command execution with arguments
+- Built-in commands: `cd`, `exit`, `history`, `alias`, `unalias`
 - Background processes with `&`
 - I/O redirection (`>`, `>>`, `<`)
-- Pipes (`|`)
-- Job control (Ctrl+Z, `jobs`, `fg`)
+- Pipes (`|`) with arbitrary length pipelines
+- Job control (Ctrl+Z, `jobs`, `fg`, `bg`)
 - Command history
 - Command substitution (`$(command)` and backtick syntax)
-- **Wildcard / glob expansion** (`*.c`, `file?.txt`, `[abc]*`)
-- **Command aliases** (`alias ll='ls -la'`)
+- Wildcard expansion (`*.c`, `file?.txt`, `[abc]*`)
+- Command aliases
 
 ## Project Structure
 
 ```
 ash/
 ├── src/               # C source files
-│   ├── shell.c        # Main shell code
+│   ├── shell.c        # Main shell logic
 │   ├── terminal.c     # Terminal handling
-│   ├── jobs.c         # Background job management
-│   ├── io.c           # Redirection stuff
+│   ├── jobs.c         # Job management
+│   ├── io.c           # I/O redirection
 │   ├── builtins.c     # Built-in commands
 │   ├── history.c      # Command history
-│   ├── parser.c       # Script parsing
-│   ├── tokenizer.c    # Command tokenizing
+│   ├── parser.c       # Command parsing
+│   ├── tokenizer.c    # Tokenization
 │   ├── vars.c         # Environment variables
-│   └── arith.c        # Math expressions
+│   └── arith.c        # Arithmetic expressions
 ├── include/           # Header files
-├── tests/             # Some basic tests
+├── tests/             # Test suite
 └── Makefile           # Build configuration
 ```
 
-## Building & Running
+## Building
 
-### Requirements
-
+**Requirements:**
 - GCC
-- readline library (`sudo apt install libreadline-dev` on Ubuntu/Debian)
+- readline library (`sudo apt install libreadline-dev`)
 - Make
 
-### Building
-
-Just run:
+**Build:**
 ```bash
 make
 ```
 
-### Running
+## Usage
 
-Interactive mode:
+**Interactive mode:**
 ```bash
 ./ash
 ```
 
-Run a script:
+**Run script:**
 ```bash
 ./ash script.ash arg1 arg2
 ```
 
-Run a single command:
+**Single command:**
 ```bash
 ./ash -c 'echo hello world'
 ```
 
-## Cool Features
+## Examples
 
-### Job Control
-
-The shell can handle background jobs properly:
-
+**Job control:**
 ```bash
-# Start a job in background
+# Background process
 ash> sleep 10 &
 [1] 12345
 
-# List running jobs
+# List jobs
 ash> jobs
 [1] 12345 Running    sleep 10
 
@@ -95,98 +80,44 @@ ash> jobs
 ash> fg 1
 ```
 
-You can also suspend jobs with Ctrl+Z and resume them later with `fg` or `bg`.
-
-### Pipes and Redirection
-
+**Pipes and redirection:**
 ```bash
-# Pipe output between commands
-ash> ls | grep .txt
+# Pipeline
+ash> ls | grep .txt | sort
 
-# Save output to file
+# Redirection
 ash> ls > files.txt
-
-# Append to file
-ash> echo "more stuff" >> files.txt
-
-# Read from file
+ash> echo "more" >> files.txt
 ash> sort < files.txt
 ```
 
-### Command Substitution
-
-You can use the output of a command as part of another command:
-
+**Command substitution:**
 ```bash
-# Modern syntax
 ash> echo "Today is $(date)"
-
-# Traditional backtick syntax
 ash> echo "Files: `ls | wc -l`"
-
-# Nested substitutions
-ash> echo "The date is $(echo `date`)"
 ```
 
-### Pipelines and Redirection
-
+**Basic scripting:**
 ```bash
-# Multi-stage pipeline (any length)
-ash> ls -1 | grep .c | sort | uniq -c | sort -nr
-```
-
-You can now chain as many commands as you like – every process in the pipeline shares the same process group so foreground signals (Ctrl-C / Ctrl-Z) work just like in bash.
-
-### Scripting
-
-I've added basic scripting support. Here's a simple example:
-
-```sh
-# Count to 3
+# Loops and conditionals
 count=0
 while [ "$count" -lt 3 ]; do
     echo "Count: $count"
     count=$(expr $count + 1)
 done
 
-# Check for C files
 if ls *.c >/dev/null 2>&1; then
-    echo "Found some C files!"
-else
-    echo "No C files here."
+    echo "Found C files"
 fi
 ```
 
-## Challenges I Faced
-
-Building this shell taught me a lot about:
-
-1. **Process management** - Creating, tracking, and controlling child processes
-2. **Signal handling** - Dealing with Ctrl+C, Ctrl+Z, etc.
-3. **Terminal control** - Managing which process group controls the terminal
-4. **File descriptors** - Handling pipes and redirections properly
-
-The trickiest part was getting job control working right - making sure background processes don't try to read from the terminal and that foreground processes receive signals properly.
-
-## What's Next
-
-I'm still working on:
-- Syntax highlighting
-- Auto completion
-
-## Building & Testing
+## Testing
 
 ```bash
-# Regular build
-make
-
-# Run tests
-make test
-
-# Clean up
-make clean
+make test    # Run tests
+make clean   # Clean build files
 ```
 
 ## License
 
-This project is under the MIT License (see `LICENSE`).
+MIT License
