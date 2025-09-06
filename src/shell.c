@@ -38,8 +38,6 @@
 #include "io.h"
 #include "globbing.h"
 #include "alias.h"
-#include "completion.h"
-#include "syntax.h"
 
 #define MAX_INPUT_SIZE 1024
 #define MAX_ARGS 64
@@ -61,11 +59,8 @@ void show_history();
 void check_background_jobs();
 int parse_and_execute(char *input);
 void execute_with_pipe(char *cmd1, char *cmd2);
-void display_with_highlight(char **matches, int num_matches, int max_length);
 /* redirection helpers in io.h */
 void initialize_readline();
-char *command_generator(const char *text, int state);
-char **command_completion(const char *text, int start, int end);
 
 // New terminal control functions
 /* init_shell_terminal moved to terminal.c */
@@ -379,7 +374,7 @@ int execute_command(char **args, int arg_count, int background) {
 
       // Reset signals to default behavior
       signal(SIGINT, SIG_DFL);   // Ctrl+C
-      signal(SIGQUIT, SIG_DFL);  // Ctrl+\
+      signal(SIGQUIT, SIG_DFL);  // Ctrl+backslash
       signal(SIGTSTP, SIG_DFL);  // Ctrl+Z
       signal(SIGTTIN, SIG_DFL);  // Background read
       signal(SIGTTOU, SIG_DFL);  // Background write
@@ -717,105 +712,11 @@ void execute_with_pipe(char *cmd1, char *cmd2) {
  * Set up readline with our preferences
  */
 void initialize_readline() {
-  // Use enhanced completion
-  rl_attempted_completion_function = enhanced_completion;
-
-  // Use custom display with syntax highlighting
-  rl_completion_display_matches_hook = display_with_highlight;
-
   // Tab key shows completion options
   rl_bind_key('\t', rl_complete);
 }
 
-/**
- * Generate possible completions for tab
- */
-char *command_generator(const char *text, int state) {
-  static DIR *dir;
-  static struct dirent *entry;
-  static char *executable_path;
-  static int len;
-  static int is_path;
-  char *name;
 
-  // First call - set up for completion
-  if (!state) {
-    len = strlen(text);
-
-    // Are we completing a path with slashes?
-    is_path = strchr(text, '/') != NULL;
-
-    if (is_path) {
-      // Get the directory part
-      char dir_path[MAX_INPUT_SIZE];
-      strcpy(dir_path, text);
-
-      char *last_slash = strrchr(dir_path, '/');
-      if (last_slash != NULL) {
-        if (last_slash == dir_path) {
-          // Just a root path like "/bin"
-          dir = opendir("/");
-          executable_path = strdup("/");
-        } else {
-          // A regular path like "foo/bar"
-          *last_slash = '\0';
-          dir = opendir(dir_path);
-          executable_path = strdup(dir_path);
-        }
-      } else {
-        // Shouldn't happen but just in case
-        dir = opendir(".");
-        executable_path = strdup(".");
-      }
-    } else {
-      // No path - look in current directory
-      dir = opendir(".");
-      executable_path = strdup(".");
-    }
-  }
-
-  // Can't read directory?
-  if (!dir) return NULL;
-
-  // Look for matching files
-  while ((entry = readdir(dir)) != NULL) {
-    name = entry->d_name;
-
-    // Skip . and ..
-    if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) continue;
-
-    // Return if it matches what we're typing
-    if (strncmp(name, text, len) == 0) {
-      char *result = malloc(strlen(name) + 1);
-      if (!result) {
-        perror("malloc error");
-        return NULL;
-      }
-
-      strcpy(result, name);
-      return result;
-    }
-  }
-
-  // No more matches
-  closedir(dir);
-  dir = NULL;
-  free(executable_path);
-
-  return NULL;
-}
-
-/**
- * Custom completion function for readline
- */
-char **command_completion(const char *text, int start, int end) {
-  // Unused params
-  (void)start;
-  (void)end;
-
-  // Get completions
-  return rl_completion_matches(text, command_generator);
-}
 
 // *** NEW: helper to split a command line into pipeline segments while respecting quotes ***
 static int split_pipeline(char *input, char **segments, int max_segments) {
@@ -1080,51 +981,3 @@ int parse_and_execute(char *input) {
   return 0;
 }
 
-/* Custom display function with syntax highlighting */
-void display_with_highlight(char **matches, int num_matches, int max_length) {
-  if (num_matches <= 0) return;
-
-  /* Calculate display width */
-  int cols = 80 / (max_length + 2);
-  if (cols < 1) cols = 1;
-
-  int rows = (num_matches + cols - 1) / cols;
-
-  for (int i = 0; i < rows; i++) {
-    for (int j = 0; j < cols; j++) {
-      int idx = j * rows + i;
-      if (idx < num_matches) {
-        /* Highlight the match */
-        highlight_entry_t *entries;
-        int entry_count;
-        entries = highlight_line(matches[idx], &entry_count);
-
-        if (entries) {
-          int pos = 0;
-          for (int k = 0; k < entry_count; k++) {
-            /* Print text before highlight */
-            if (entries[k].start > pos) {
-              printf("%.*s", entries[k].start - pos, matches[idx] + pos);
-            }
-            /* Print highlighted text */
-            printf("%s%.*s\033[0m", get_token_color(entries[k].type),
-                   entries[k].end - entries[k].start, matches[idx] + entries[k].start);
-            pos = entries[k].end;
-          }
-          /* Print remaining text */
-          if (pos < strlen(matches[idx])) {
-            printf("%s", matches[idx] + pos);
-          }
-          free_highlights(entries);
-        } else {
-          printf("%s", matches[idx]);
-        }
-
-        /* Padding */
-        int padding = max_length - strlen(matches[idx]) + 2;
-        printf("%*s", padding, "");
-      }
-    }
-    printf("\n");
-  }
-}

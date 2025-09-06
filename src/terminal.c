@@ -52,7 +52,7 @@ void terminal_init(void) {
 
   // Ignore job control signals for now
   signal(SIGINT, SIG_IGN);   // Ctrl+C
-  signal(SIGQUIT, SIG_IGN);  // Ctrl+\
+  signal(SIGQUIT, SIG_IGN);  // Ctrl+backslash
   signal(SIGTSTP, SIG_IGN); // Ctrl+Z
   signal(SIGTTIN, SIG_IGN);  // Terminal read from bg
   signal(SIGTTOU, SIG_IGN);  // Terminal write from bg
